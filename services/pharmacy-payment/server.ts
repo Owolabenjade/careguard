@@ -159,6 +159,28 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
   next(err);
 });
 
-app.listen(PORT, () => {
+let isDraining = false;
+app.get("/ready", (_req, res) => {
+  if (isDraining) {
+    res.status(503).send("Service Unavailable");
+    return;
+  }
+  res.send("OK");
+});
+
+const server = app.listen(PORT, () => {
   logger.info({ port: PORT, network: NETWORK, recipient: RECIPIENT, currency: USDC_SAC_TESTNET }, "Pharmacy Payment Service (MPP Charge) started");
+});
+
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received. Draining server...");
+  isDraining = true;
+  server.close(() => {
+    logger.info("Server closed. Exiting process.");
+    process.exit(0);
+  });
+  setTimeout(() => {
+    logger.error("Graceful shutdown timeout. Forcing exit.");
+    process.exit(1);
+  }, 30000);
 });

@@ -9,6 +9,7 @@
  */
 
 import "dotenv/config";
+import { createHash } from "crypto";
 import express from "express";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
 import OpenAI from "openai";
@@ -47,7 +48,9 @@ import {
   type PauseReason,
 } from "./shared/agent-state.ts";
 import { checkWalletBalance, formatResult } from "./shared/wallet-balance.ts";
-import { appendAuditEntry } from "./shared/audit-log.ts";
+import { appendAuditEntry, auditRouter } from "./shared/audit-log.ts";
+import { rateLimiters } from "./shared/rate-limit.ts";
+import { agentQueue } from "./shared/agent-queue.ts";
 
 // Agent tools
 import {
@@ -141,6 +144,13 @@ let _profileData = {
 
 // --- Express App ---
 const app = express();
+let isDraining = false;
+
+app.use("/agent/audit", auditRouter);
+
+app.use("/agent", rateLimiters.agent);
+app.use("/health", rateLimiters.health);
+app.use(rateLimiters.default);
 const sentry = await initSentry({ service: "careguard-server" });
 app.use(sentry.requestHandler());
 applySecurityMiddleware(app);
@@ -187,6 +197,10 @@ export function setOzFacilitatorReachable(reachable: boolean) {
 
 // --- Readiness probe — checks Horizon + OZ facilitator flag + required env ---
 app.get("/ready", async (_req, res) => {
+  if (isDraining) {
+    res.status(503).send("Service Unavailable");
+    return;
+  }
   const checks: Record<string, boolean | string> = {};
 
   // 1. Required env vars
@@ -1057,6 +1071,16 @@ async function runAgent(task: string) {
         result = { error: err.message };
         toolCalls.push({ tool: tc.function.name, input: args, result });
       }
+
+      appendAuditEntry({
+        event: "tool_call",
+        actor: "agent",
+        details: {
+          tool: tc.function.name,
+          inputs: args,
+          resultHash: createHash("sha256").update(JSON.stringify(result || {})).digest("hex")
+        }
+      });
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -1149,11 +1173,15 @@ app.post("/agent/run", async (req, res) => {
   const task = validation.task!;
   logger.info({ task, suspicious: validation.suspicious }, "agent task received");
   try {
-    const result = await runAgent(task);
+    const result = await agentQueue.enqueue(() => runAgent(task));
     agentRunsTotal.inc({ status: "success" });
     logger.info({ toolCalls: result.toolCalls.length, truncated: result.truncated }, "agent task complete");
     res.json(result);
   } catch (err: any) {
+    if (err.status === 429) {
+      res.status(429).set("Retry-After", String(err.retryAfter)).json({ error: err.message });
+      return;
+    }
     agentRunsTotal.inc({ status: "error" });
     res.status(500).json({ error: err.message });
   }
@@ -1209,7 +1237,7 @@ async function startWalletBalanceScheduler(): Promise<void> {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  app.listen(PORT, async () => {
+  const server = app.listen(PORT, async () => {
     let usdcBalance = "unknown";
     try {
       const acc = await horizonServer.loadAccount(agentKeypair.publicKey());
@@ -1220,5 +1248,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     logger.info({ port: PORT, network: NETWORK, llm: LLM_MODEL, wallet: agentKeypair.publicKey(), usdc: usdcBalance }, "CareGuard Unified Server started");
     await startWalletBalanceScheduler();
+  });
+
+  process.on("SIGTERM", () => {
+    logger.info("SIGTERM received. Draining server...");
+    isDraining = true;
+    server.close(() => {
+      logger.info("Server closed. Exiting process.");
+      process.exit(0);
+    });
+    setTimeout(() => {
+      logger.error("Graceful shutdown timeout. Forcing exit.");
+      process.exit(1);
+    }, 30000);
   });
 }

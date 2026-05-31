@@ -70,6 +70,15 @@ export const TransactionSchema = z.object({
 
 export type Transaction = z.infer<typeof TransactionSchema>;
 
+export const AuditLogSchema = z.object({
+  timestamp: z.string(),
+  event: z.string(),
+  actor: z.string(),
+  details: z.any(),
+});
+
+export type AuditLogEvent = z.infer<typeof AuditLogSchema>;
+
 export const SpendingDataSchema = z.object({
   policy: z.object({
     dailyLimit: z.number(),

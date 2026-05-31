@@ -116,6 +116,7 @@ export default function Dashboard() {
             agentLog={state.agentLog}
             setAgentLog={state.setAgentLog}
             allTransactions={state.allTransactions}
+            auditEvents={state.auditEvents}
             pagination={state.pagination}
             currentPage={state.currentPage}
             setCurrentPage={state.setCurrentPage}

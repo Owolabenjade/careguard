@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   SpendingDataSchema,
   TransactionSchema,
+  AuditLogSchema,
   type SpendingData,
   type Transaction,
 } from "../lib/types";
@@ -13,6 +14,7 @@ import type {
   AgentResult,
   PaginationData,
   Tab,
+  AuditLogEvent,
 } from "../components/types";
 
 const AGENT_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3004";
@@ -34,6 +36,7 @@ export interface UseAgentStateOptions {
 export function useAgentState({ activeTab }: UseAgentStateOptions) {
   const [spending, setSpending] = useState<SpendingData | null>(null);
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditLogEvent[]>([]);
   const [pagination, setPagination] = useState<PaginationData | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
@@ -144,6 +147,15 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
         : [];
       setAllTransactions(txs);
       if (data.pagination) setPagination(data.pagination);
+
+      const auditRes = await fetch(`${AGENT_URL}/agent/audit?limit=100`);
+      if (auditRes.ok) {
+        const auditData = await auditRes.json();
+        const logs = Array.isArray(auditData.data)
+          ? auditData.data.map((l: unknown) => AuditLogSchema.parse(l))
+          : [];
+        setAuditEvents(logs);
+      }
     } catch {}
   }, []);
 
@@ -290,6 +302,7 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     // state
     spending,
     allTransactions,
+    auditEvents,
     pagination,
     currentPage,
     setCurrentPage,

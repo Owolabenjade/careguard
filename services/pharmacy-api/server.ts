@@ -115,7 +115,29 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
   next(err);
 });
 
-app.listen(PORT, async () => {
+let isDraining = false;
+app.get("/ready", (_req, res) => {
+  if (isDraining) {
+    res.status(503).send("Service Unavailable");
+    return;
+  }
+  res.send("OK");
+});
+
+const server = app.listen(PORT, async () => {
   const drugCount = await pricingProvider.getDrugCount();
   logger.info({ port: PORT, network: NETWORK, facilitator: OZ_FACILITATOR_URL, payTo: PAY_TO, provider: pricingProvider.name, drugCount }, "Pharmacy Price API started");
+});
+
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received. Draining server...");
+  isDraining = true;
+  server.close(() => {
+    logger.info("Server closed. Exiting process.");
+    process.exit(0);
+  });
+  setTimeout(() => {
+    logger.error("Graceful shutdown timeout. Forcing exit.");
+    process.exit(1);
+  }, 30000);
 });
