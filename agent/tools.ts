@@ -40,6 +40,12 @@ export { SPENDING_TIMEZONE, getLocalDateStr };
 import { appendAuditEntry } from '../shared/audit-log.ts';
 import { notify } from '../shared/notifications.ts';
 import {
+  getAdherenceSummary,
+  getPendingAdherences,
+  getFlaggedAdherences,
+  confirmAdherence,
+} from '../shared/adherence.ts';
+import {
   x402SettlementsTotal,
   paymentsUsdcTotal,
   stellarTxSubmittedTotal,
@@ -233,7 +239,7 @@ function loadSpending(recipientId?: string): SpendingTracker {
   return JSON.parse(readFileSync(file, 'utf-8'));
 }
 
-function saveSpending(data: SpendingTracker, recipientId?: string) {
+export function saveSpending(data: SpendingTracker, recipientId?: string) {
   const file = getSpendingFile(recipientId);
   writeFileSync(file, JSON.stringify(data, null, 2));
 }
@@ -870,6 +876,7 @@ export async function payForMedication(
   amount: number,
   skipApproval: boolean = false,
   daysSupply: number = 30,
+  _recipientId?: string,
 ) {
   if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_PAYMENT) {
     return {
@@ -1025,6 +1032,7 @@ export async function payBill(
   description: string,
   amount: number,
   skipApproval: boolean = false,
+  _recipientId?: string,
 ) {
   if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_PAYMENT) {
     return {
@@ -1287,46 +1295,60 @@ function appendAdherenceEntry(entry: Omit<AdherenceEntry, "responded" | "taken" 
 }
 
 // --- Tool: Generate a dispute letter PDF + email body (Issue #266) ---
-export function generateDisputeLetter(input: {
-  billId: string;
-  recipientName: string;
-  providerName: string;
-  errorIds: string[];
-  auditFindings: Array<{ description: string; cptCode: string; chargedAmount: number; fairMarketRate: number; overcharge: number }>;
-  caregiverName: string;
-  caregiverEmail: string;
-  caregiverPhone: string;
-}): { pdf: string; emailBody: string } {
-  const totalOvercharge = input.auditFindings.reduce((s, f) => s + f.overcharge, 0);
-  const emailBody = `To: ${input.providerName} Billing Department
-Subject: Dispute of Medical Bill #${input.billId} — Overcharge of $${totalOvercharge.toFixed(2)}
+export function generateDisputeLetter(
+  billId: string,
+  errorIds: string[],
+  auditResult: { totalOvercharge: number; errorCount: number; lineItems: Array<{ description: string; cptCode?: string; chargedAmount: number; suggestedAmount?: number; errorDescription?: string }> },
+  recipientInfo: { name: string; facility: string; caregiverName: string; caregiverEmail: string }
+) {
+  const errorItems = auditResult.lineItems.filter(
+    (item) => errorIds.length === 0 || errorIds.includes(item.description)
+  );
 
-Dear ${input.providerName} Billing Department,
+  const letterLines: string[] = [];
+  letterLines.push(`Dear ${recipientInfo.facility} Billing Department,`);
+  letterLines.push("");
+  letterLines.push(`I am writing on behalf of ${recipientInfo.name}, a patient at your facility, to formally dispute the following billing errors identified in Bill #${billId}.`);
+  letterLines.push("");
+  letterLines.push("After auditing the bill, we found the following discrepancies:");
+  letterLines.push("");
 
-I am writing to formally dispute the charges on bill #${input.billId} for ${input.recipientName}.
+  for (const item of errorItems) {
+    letterLines.push(`  - ${item.description}${item.cptCode ? ` (CPT: ${item.cptCode})` : ""}: Charged $${item.chargedAmount.toFixed(2)}`);
+    if (item.suggestedAmount !== undefined) {
+      letterLines.push(`    Fair market rate: $${item.suggestedAmount.toFixed(2)}`);
+    }
+    if (item.errorDescription) {
+      letterLines.push(`    Issue: ${item.errorDescription}`);
+    }
+    letterLines.push("");
+  }
 
-Our AI audit identified the following ${input.auditFindings.length} error(s):
+  letterLines.push(`Total overcharge identified: $${auditResult.totalOvercharge.toFixed(2)}`);
+  letterLines.push("");
+  letterLines.push("We request that these charges be reviewed and corrected. Please adjust the bill to reflect the fair-market rates as outlined above.");
+  letterLines.push("");
+  letterLines.push("Thank you for your prompt attention to this matter.");
+  letterLines.push("");
+  letterLines.push("Sincerely,");
+  letterLines.push(recipientInfo.caregiverName);
+  letterLines.push(recipientInfo.caregiverEmail);
 
-${input.auditFindings.map((f, i) => `Error ${i + 1}: ${f.description} (CPT: ${f.cptCode})
-  Charged: $${f.chargedAmount.toFixed(2)} | Fair Market Rate: $${f.fairMarketRate.toFixed(2)} | Overcharge: $${f.overcharge.toFixed(2)}`).join("\n\n")}
-
-Total overcharge identified: $${totalOvercharge.toFixed(2)}
-
-We request a corrected bill reflecting the fair market rates.
-
-Please send the corrected bill to:
-${input.caregiverName}
-${input.caregiverEmail}
-${input.caregiverPhone}
-
-Thank you for your prompt attention to this matter.
-
-Sincerely,
-${input.caregiverName}
-CareGuard AI Agent`;
-
-  const pdf = `careguard-dispute-letter-${input.billId}.pdf`;
+  const emailBody = letterLines.join("\n");
+  const pdf = `careguard-dispute-letter-${billId}.pdf`;
   return { pdf, emailBody };
+}
+
+// --- Tool: Adherence status (Issue #264) ---
+export function getAdherenceStatus(recipientId: string = "rosa") {
+  const summary = getAdherenceSummary(recipientId);
+  const pending = getPendingAdherences(recipientId);
+  const flagged = getFlaggedAdherences(recipientId);
+  return { ...summary, pendingReminders: pending.length, flaggedReminders: flagged };
+}
+
+export function confirmAdherenceReminder(recordId: string) {
+  return { success: confirmAdherence(recordId) };
 }
 
 // Claude API tool definitions
@@ -1484,23 +1506,39 @@ export const TOOL_DEFINITIONS = [
       type: 'object' as const,
       properties: {
         bill_id: { type: 'string', description: 'The disputed bill ID' },
-        provider_name: { type: 'string', description: 'Provider/hospital name' },
-        error_ids: { type: 'array', items: { type: 'string' }, description: 'List of error IDs or descriptions from the audit' },
+        audit_result_json: { type: 'string', description: 'JSON string of the full audit result from audit_medical_bill' },
+        error_descriptions: { type: 'array', items: { type: 'string' }, description: 'List of error descriptions to include (empty = all errors)' },
+        recipient_name: { type: 'string', description: 'Recipient/patient name' },
+        facility: { type: 'string', description: 'Healthcare facility/hospital name' },
+        caregiver_name: { type: 'string', description: 'Caregiver name for signature' },
+        caregiver_email: { type: 'string', description: 'Caregiver email for signature' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
-      required: ['bill_id', 'provider_name', 'error_ids'],
+      required: ['bill_id', 'audit_result_json'],
     },
   },
   {
-    name: 'check_adherence',
+    name: 'get_adherence_status',
     description:
-      'Check medication adherence status for the care recipient. Returns pending reminders, missed doses, and any flags for persistent skips.',
+      'Get medication adherence status for a recipient — pending reminders, confirmed doses, skipped doses, and flagged persistent skips.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
+        recipient_id: { type: 'string', description: 'Recipient identifier (default: rosa)' },
       },
       required: [] as string[],
+    },
+  },
+  {
+    name: 'confirm_adherence',
+    description:
+      'Confirm that a medication dose was taken. Call this when the caregiver reports the recipient took their medication.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        record_id: { type: 'string', description: 'Adherence record ID to confirm' },
+      },
+      required: ['record_id'],
     },
   },
 ];

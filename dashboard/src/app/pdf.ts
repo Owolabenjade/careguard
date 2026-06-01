@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import type { BillAuditResult, DrugInteractionResult, PharmacyCompareResult, SpendingData, Transaction } from "../lib/types";
+import type { BillAuditResult, DrugInteractionResult, PharmacyCompareResult, SpendingData, Transaction, DisputeLetter } from "../lib/types";
 import { DEFAULT_PDF_THEME, type PdfTheme } from "../lib/pdf-theme";
 import type { RecipientProfile } from "../lib/types";
 
@@ -314,97 +314,46 @@ export function downloadTransactionPDF(
 }
 
 export function downloadDisputeLetterPDF(
-  params: {
-    billId: string;
-    recipientName: string;
-    providerName: string;
-    auditFindings: Array<{
-      description: string;
-      cptCode?: string;
-      chargedAmount: number;
-      fairMarketRate?: number;
-      overcharge: number;
-    }>;
-    caregiverName: string;
-    caregiverEmail?: string;
-    caregiverPhone?: string;
-  },
+  letter: DisputeLetter,
   options?: { theme?: PdfTheme }
 ) {
   const theme = options?.theme ?? DEFAULT_PDF_THEME;
-  const doc: AutoTableDoc = new jsPDF();
+  const doc = new jsPDF();
   doc.setProperties({
-    title: "CareGuard Dispute Letter",
-    subject: `Dispute for bill ${params.billId}`,
+    title: `CareGuard Dispute Letter — ${letter.recipientName}`,
+    subject: `Bill dispute for ${letter.recipientName}`,
     author: "CareGuard",
-    keywords: `${params.recipientName},dispute,${params.billId}`,
+    keywords: `${letter.recipientName},dispute,bill,stellar`,
     creator: `CareGuard ${new Date().toISOString()}`,
   });
-  addHeader(doc, "Medical Bill Dispute Letter", `Bill #${params.billId} — ${params.providerName}`, theme);
 
-  const totalOvercharge = params.auditFindings.reduce((s, f) => s + f.overcharge, 0);
-  const today = new Date().toLocaleDateString();
+  addHeader(doc, "Medical Bill Dispute Letter", `Patient: ${letter.recipientName} | Facility: ${letter.facility} | Overcharge: $${letter.totalOvercharge.toFixed(2)}`, theme);
 
   let y = 58;
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Date: ${today}`, 14, y);
-  y += 6;
-  doc.text(`To: ${params.providerName} Billing Department`, 14, y);
-  y += 6;
-  doc.text(`Re: Dispute of Bill #${params.billId} for ${params.recipientName}`, 14, y);
-  y += 10;
 
-  doc.setFontSize(10);
-  doc.text("Dear Billing Department,", 14, y);
-  y += 6;
-  doc.text(
-    `Our AI-powered audit identified ${params.auditFindings.length} error(s) totaling $${totalOvercharge.toFixed(2)} in overcharges on the above-referenced bill.`,
-    14,
-    y,
-    { maxWidth: 180 }
-  );
-  y += 10;
-
-  // Findings table
-  autoTable(doc, {
-    startY: y,
-    head: [["Description", "CPT Code", "Charged", "Fair Rate", "Overcharge"]],
-    body: params.auditFindings.map((f) => [
-      f.description,
-      f.cptCode || "-",
-      `$${f.chargedAmount.toFixed(2)}`,
-      f.fairMarketRate ? `$${f.fairMarketRate.toFixed(2)}` : "-",
-      `$${f.overcharge.toFixed(2)}`,
-    ]),
-    headStyles: { fillColor: theme.headerColor, fontSize: 8 },
-    bodyStyles: { fontSize: 8 },
-    showHead: "everyPage",
-  });
-
-  y = (doc.lastAutoTable?.finalY || y) + 8;
-  doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text(`Total Overcharge Identified: $${totalOvercharge.toFixed(2)}`, 14, y);
-  y += 8;
-  doc.text("We request a corrected bill reflecting fair market rates.", 14, y, { maxWidth: 180 });
-  y += 8;
-  doc.text("Please send the updated bill to:", 14, y);
-  y += 6;
-  doc.text(params.caregiverName, 14, y);
-  y += 5;
-  if (params.caregiverEmail) doc.text(params.caregiverEmail, 14, y);
-  if (params.caregiverEmail) y += 5;
-  if (params.caregiverPhone) doc.text(params.caregiverPhone, 14, y);
-  y += 10;
-  doc.text("Sincerely,", 14, y);
-  y += 6;
-  doc.text(params.caregiverName, 14, y);
-  y += 5;
-  doc.setFontSize(8);
-  doc.setTextColor(...theme.mutedColor);
-  doc.text("CareGuard AI Agent — Stellar Blockchain", 14, y);
+  // Letter body
+  const lines = letter.emailText.split("\n");
+  for (const line of lines) {
+    if (y > 270) {
+      doc.addPage();
+      y = 30;
+      addHeader(doc, "Medical Bill Dispute Letter (cont.)", `Patient: ${letter.recipientName}`, theme);
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+    }
+    // Indent bullet points
+    const indent = line.startsWith("  -") || line.startsWith("    ") ? 20 : 14;
+    doc.text(line, indent, y);
+    y += 6;
+  }
 
   addFooter(doc);
-  doc.save(`careguard-dispute-letter-${params.billId}.pdf`);
+  doc.save(`careguard-dispute-letter-${letter.billId}.pdf`);
+}
+
+export function downloadDisputeLetterEmail(letter: DisputeLetter): string {
+  // Returns email-ready HTML
+  return letter.emailHtml;
 }
