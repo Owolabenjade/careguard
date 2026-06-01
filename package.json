@@ -18,7 +18,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "load": "k6 run load/agent-run.js"
+    "load": "k6 run load/agent-run.js",
+    "check:env-vars": "tsx scripts/check-env-vars.ts"
   },
   "keywords": [],
   "author": "",
@@ -35,6 +36,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "glob": "^11.0.0",
     "helmet": "^8.2.0",
     "ioredis": "^5.6.0",
     "mppx": "^0.6.5",

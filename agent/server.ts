@@ -39,6 +39,7 @@ import {
   payBill,
   checkSpendingPolicy,
   getSpendingSummary,
+  getWalletBalance,
   setSpendingPolicy,
   getSpendingTracker,
   resetSpendingTracker,
@@ -138,6 +139,7 @@ async function executeTool(name: string, input: any): Promise<any> {
       case "pay_bill": result = await payBill(input.provider_id, input.provider_name, input.description, parseFloat(input.amount)); break;
       case "check_spending_policy": result = checkSpendingPolicy(parseFloat(input.amount), input.category); break;
       case "get_spending_summary": result = getSpendingSummary(); break;
+      case "get_wallet_balance": result = await getWalletBalance(); break;
       default: result = { error: `Unknown tool: ${name}` };
     }
     agentToolCallsTotal.inc({ tool: name, status: "success" });

@@ -553,6 +553,36 @@ export function getSpendingSummary() {
   };
 }
 
+// --- Tool: Get wallet balance from Horizon ---
+export async function getWalletBalance() {
+  const address = agentKeypair.publicKey();
+  logger.info({ address }, "[Horizon] fetching wallet balance");
+
+  try {
+    const account = await horizonServer.loadAccount(address);
+    
+    const usdcBalance = account.balances.find(
+      (b: any) => b.asset_code === "USDC" && b.asset_issuer === USDC_ISSUER
+    );
+    
+    const xlmBalance = account.balances.find(
+      (b: any) => b.asset_type === "native"
+    );
+
+    return {
+      address,
+      balances: {
+        usdc: usdcBalance ? parseFloat((usdcBalance as any).balance).toFixed(2) : "0.00",
+        xlm: xlmBalance ? parseFloat((xlmBalance as any).balance).toFixed(2) : "0.00",
+      },
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err: any) {
+    logger.error({ err: err.message, address }, "[Horizon] failed to fetch balance");
+    throw new Error(`Failed to fetch wallet balance: ${err.message}`);
+  }
+}
+
 // Claude API tool definitions
 export const TOOL_DEFINITIONS = [
   {
@@ -652,6 +682,17 @@ export const TOOL_DEFINITIONS = [
   {
     name: "get_spending_summary",
     description: "Get current spending summary: total spent, budget remaining per category, recent transactions with Stellar tx hashes.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        _unused: { type: "string", description: "Not used. Pass empty string." },
+      },
+      required: [] as string[],
+    },
+  },
+  {
+    name: "get_wallet_balance",
+    description: "Get the current on-chain wallet balance (USDC and XLM) from Stellar Horizon. Returns real-time balance data.",
     input_schema: {
       type: "object" as const,
       properties: {
