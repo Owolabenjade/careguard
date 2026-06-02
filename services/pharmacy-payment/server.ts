@@ -33,6 +33,7 @@ if (!MPP_SECRET_KEY) throw new Error("MPP_SECRET_KEY required in .env");
 
 // Order storage (persisted to file)
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import lock from "proper-lockfile";
 
 const DATA_DIR = new URL("../../data", import.meta.url).pathname;
 const ORDERS_FILE = `${DATA_DIR}/orders.json`;
@@ -44,10 +45,38 @@ function loadOrders(): any[] {
   return JSON.parse(readFileSync(ORDERS_FILE, "utf-8"));
 }
 
-function saveOrder(order: any) {
-  const orders = loadOrders();
-  orders.push(order);
-  writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+/**
+ * Save a new order to the orders file with file-level locking to prevent race conditions.
+ * Ensures that concurrent calls don't lose data due to simultaneous read-modify-write operations.
+ * 
+ * Trade-off: File-based locking is slower than in-memory storage but is sufficient for the demo.
+ * For production, consider switching to SQLite (#168) or a proper database.
+ */
+async function saveOrder(order: any) {
+  let release: any;
+  try {
+    // Acquire exclusive lock on the orders file
+    release = await lock.lock(ORDERS_FILE, { retries: 10, stale: 5000 });
+    
+    // Safe read-modify-write within lock
+    const orders = loadOrders();
+    orders.push(order);
+    writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+    
+    logger.info({ orderId: order.id || 'unknown' }, 'Order saved successfully with lock');
+  } catch (err: any) {
+    logger.error({ err: err.message, orderId: order.id || 'unknown' }, 'Failed to save order');
+    throw err;
+  } finally {
+    // Always release the lock
+    if (release) {
+      try {
+        await release();
+      } catch (err: any) {
+        logger.warn({ err: err.message }, 'Failed to release file lock');
+      }
+    }
+  }
 }
 
 const app = express();
@@ -136,7 +165,7 @@ app.post("/pharmacy/order", async (req, res) => {
     network: NETWORK,
     protocol: "MPP Charge",
   };
-  saveOrder(order);
+  await saveOrder(order);
 
   // Return response with payment receipt headers
   const response = result.withReceipt(

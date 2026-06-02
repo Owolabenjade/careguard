@@ -1,5 +1,18 @@
 // CareGuard Shared Types
 
+/**
+ * Drug Interaction Severity Convention
+ * 
+ * The following severity levels are used for drug interactions,
+ * ordered by clinical risk:
+ * - "severe" (0): Life-threatening or requires immediate intervention
+ * - "moderate" (1): Significant interaction requiring monitoring/adjustment
+ * - "mild" (2): Minor interaction with minimal clinical impact
+ * 
+ * When sorting interactions, severe > moderate > mild.
+ * For interactions with equal severity, sort alphabetically by drug names.
+ */
+
 export interface Medication {
   name: string;
   dosage: string;

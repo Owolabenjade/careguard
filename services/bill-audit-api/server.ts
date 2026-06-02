@@ -65,7 +65,43 @@ process.on('SIGHUP', () => {
   loadDuplicateAllowlist();
 });
 
+// Audit threshold configuration
+interface AuditThresholdConfig {
+  default: number;
+  byCpt: Record<string, number>;
+}
+
+let auditThresholds: AuditThresholdConfig = { default: 1.5, byCpt: {} };
+
+function loadAuditThresholds() {
+  try {
+    const thresholdsPath = new URL('./audit_thresholds.json', import.meta.url).pathname;
+    auditThresholds = JSON.parse(readFileSync(thresholdsPath, 'utf-8')) as AuditThresholdConfig;
+    logger.info({ default: auditThresholds.default, cptCount: Object.keys(auditThresholds.byCpt).length }, 'Loaded audit thresholds configuration');
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Failed to load audit_thresholds.json, using default threshold of 1.5');
+    auditThresholds = { default: 1.5, byCpt: {} };
+  }
+}
+
+function getAuditThreshold(cptCode: string): number {
+  return auditThresholds.byCpt[cptCode] ?? auditThresholds.default;
+}
+
+// Load thresholds at boot
+loadAuditThresholds();
+
+// Reload thresholds on SIGHUP
+process.on('SIGHUP', () => {
+  logger.info('SIGHUP received, reloading audit thresholds');
+  loadAuditThresholds();
+});
+
 // Fair market rate database — based on CMS Medicare Physician Fee Schedule 2026
+// Rates are valid through end of 2026. After this date, rates should be refreshed.
+const RATES_AS_OF = '2026-01-01';
+const RATES_VALID_UNTIL = '2026-12-31';
+
 const FAIR_MARKET_RATES: Record<string, { description: string; fairRate: number }> = {
   "99213": { description: "Office visit, established patient, moderate", fairRate: 130 },
   "99214": { description: "Office visit, established patient, high", fairRate: 195 },
@@ -83,6 +119,18 @@ const FAIR_MARKET_RATES: Record<string, { description: string; fairRate: number 
   "J0170": { description: "Adrenaline/epinephrine injection", fairRate: 15 },
   "97110": { description: "Physical therapy, therapeutic exercises", fairRate: 55 },
 };
+
+// Check if rates data is stale
+function checkRatesFreshness() {
+  const validUntil = new Date(RATES_VALID_UNTIL);
+  const now = new Date();
+  if (now > validUntil) {
+    logger.warn({ ratesAsOf: RATES_AS_OF, validUntil: RATES_VALID_UNTIL, currentDate: now.toISOString() }, 'Fair market rates are stale. Please refresh rates from CMS fee schedule.');
+  }
+}
+
+// Check freshness at boot
+checkRatesFreshness();
 
 interface BillItem { description: string; cptCode: string; quantity: number; chargedAmount: number; }
 
@@ -107,6 +155,7 @@ function auditBill(lineItems: BillItem[]) {
     totalCharged += item.chargedAmount;
     const fairRate = FAIR_MARKET_RATES[item.cptCode];
     const fairAmount = fairRate ? fairRate.fairRate * item.quantity : null;
+    const threshold = getAuditThreshold(item.cptCode);
 
     seenCodes[item.cptCode] = (seenCodes[item.cptCode] || 0) + 1;
     if (seenCodes[item.cptCode] > 1 && !duplicateAllowlist.has(item.cptCode)) {
@@ -115,7 +164,7 @@ function auditBill(lineItems: BillItem[]) {
       continue;
     }
 
-    if (fairAmount && item.chargedAmount > fairAmount * 1.5) {
+    if (fairAmount && item.chargedAmount > fairAmount * threshold) {
       errorCount++;
       const suggestedAmount = +(fairAmount * 1.2).toFixed(2);
       totalCorrect += suggestedAmount;
@@ -130,12 +179,16 @@ function auditBill(lineItems: BillItem[]) {
 
   const totalOvercharge = +(totalCharged - totalCorrect).toFixed(2);
   const savingsPercent = totalCharged > 0 ? +((totalOvercharge / totalCharged) * 100).toFixed(1) : 0;
+  const now = new Date();
+  const validUntil = new Date(RATES_VALID_UNTIL);
+  const isStale = now > validUntil;
 
   return {
     auditTimestamp: new Date().toISOString(),
     protocol: { name: "x402", network: NETWORK, price: "$0.01", payTo: PAY_TO },
     totalCharged: +totalCharged.toFixed(2), totalCorrect: +totalCorrect.toFixed(2),
     totalOvercharge, savingsPercent, errorCount, lineItems: results,
+    dataFreshness: { ratesAsOf: RATES_AS_OF, validUntil: RATES_VALID_UNTIL, isStale },
     recommendation: errorCount === 0 ? "No errors detected. This bill appears correct." : `Found ${errorCount} errors totaling $${totalOvercharge} in overcharges (${savingsPercent}% of total bill). Strongly recommend filing a formal dispute.`,
   };
 }

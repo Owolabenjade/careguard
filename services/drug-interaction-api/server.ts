@@ -39,6 +39,23 @@ const INTERACTIONS: Interaction[] = [
   { drugs: ["lisinopril", "amlodipine"], severity: "mild", description: "Common intentional combination for blood pressure management. Both lower BP through different mechanisms.", recommendation: "Monitor for excessive blood pressure lowering (dizziness, lightheadedness)." },
 ];
 
+/**
+ * Sort drug interaction pairs by severity (severe > moderate > mild)
+ * and alphabetically by drug name for equal severities.
+ * Severity order: severe (0) > moderate (1) > mild (2)
+ */
+function sortPairsBySeverity(pairs: any[]): any[] {
+  const severityOrder: Record<string, number> = { severe: 0, moderate: 1, mild: 2 };
+  return pairs.sort((a, b) => {
+    const severityDiff = (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3);
+    if (severityDiff !== 0) return severityDiff;
+    // Equal severity: sort alphabetically by drug names
+    const aKey = [a.drug1, a.drug2].sort().join('|');
+    const bKey = [b.drug1, b.drug2].sort().join('|');
+    return aKey.localeCompare(bKey);
+  });
+}
+
 function checkInteractions(medications: string[]) {
   const meds = medications.map(m => m.toLowerCase().trim());
   const found: any[] = [];
@@ -62,7 +79,7 @@ function checkInteractions(medications: string[]) {
     protocol: { name: "x402", network: NETWORK, price: "$0.001", payTo: PAY_TO },
     medications, interactionCount: found.length, severeCount: severe, moderateCount: moderate,
     mildCount: found.length - severe - moderate,
-    interactions: found.sort((a, b) => ({ severe: 0, moderate: 1, mild: 2 }[a.severity as string] ?? 3) - ({ severe: 0, moderate: 1, mild: 2 }[b.severity as string] ?? 3)),
+    interactions: sortPairsBySeverity(found),
     overallRisk: severe > 0 ? "high" : moderate > 0 ? "moderate" : found.length > 0 ? "low" : "none",
     summary: found.length === 0 ? "No known interactions found." : `Found ${found.length} interaction(s): ${severe} severe, ${moderate} moderate, ${found.length - severe - moderate} mild.`,
   };
