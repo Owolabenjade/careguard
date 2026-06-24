@@ -458,7 +458,11 @@ export function setSpendingPolicy(
   });
 }
 export function getSpendingTracker(): any {
-  return { ...spendingTracker, policy: currentPolicy };
+  // Return the latest disk-backed policy rather than the potentially stale
+  // module-level `currentPolicy` so multi-instance deployments observe
+  // updates made via the caregiver HTTP API.
+  const policy = loadPolicy();
+  return { ...spendingTracker, policy };
 }
 export function resetSpendingTracker(recipientId?: string) {
   if (recipientId) {
@@ -834,10 +838,13 @@ export function checkSpendingPolicy(
   amount: number,
   category: 'medications' | 'bills',
 ) {
+  // Always load the latest policy from disk so multi-instance deployments
+  // pick up caregiver updates performed via POST /agent/policy.
+  const policy = loadPolicy();
   const budget =
     category === 'medications'
-      ? currentPolicy.medicationMonthlyBudget
-      : currentPolicy.billMonthlyBudget;
+      ? policy.medicationMonthlyBudget
+      : policy.billMonthlyBudget;
   const currentSpending =
     category === 'medications'
       ? spendingTracker.medications
@@ -863,10 +870,10 @@ export function checkSpendingPolicy(
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
-  if (totalToday + amount > currentPolicy.dailyLimit) {
+  if (totalToday + amount > policy.dailyLimit) {
     return {
       allowed: false,
-      reason: `Payment of $${amount.toFixed(2)} would exceed daily limit of $${currentPolicy.dailyLimit}. Already spent today: $${totalToday.toFixed(2)}`,
+      reason: `Payment of $${amount.toFixed(2)} would exceed daily limit of $${policy.dailyLimit}. Already spent today: $${totalToday.toFixed(2)}`,
       requiresApproval: false,
       currentSpending,
       budgetRemaining: remaining,
@@ -875,7 +882,7 @@ export function checkSpendingPolicy(
 
   return {
     allowed: true,
-    requiresApproval: amount > currentPolicy.approvalThreshold,
+    requiresApproval: amount > policy.approvalThreshold,
     currentSpending,
     budgetRemaining: remaining - amount,
   };
@@ -894,7 +901,6 @@ async function executeMedicationPayment(
 
   let stellarTxHash: string | undefined;
   let mppOrderId: string | undefined;
-  const previousMppTxHash = mppClient.lastTxHash;
 
   if (isMockNetwork()) {
     const receipt = createMockReceipt('mpp:medication-order', {
@@ -931,25 +937,28 @@ async function executeMedicationPayment(
       throw new Error(data.error || 'MPP payment failed');
     }
 
-    stellarTxHash =
-      mppClient.lastTxHash && mppClient.lastTxHash !== previousMppTxHash
-        ? mppClient.lastTxHash
-        : undefined;
-    if (!stellarTxHash) {
-      const receiptHeader =
-        response.headers.get('Payment-Receipt') ||
-        response.headers.get('payment-receipt');
-      if (receiptHeader) {
-        try {
-          const receipt = JSON.parse(
-            Buffer.from(receiptHeader, 'base64').toString(),
-          );
-          stellarTxHash =
-            receipt.reference || receipt.hash || receipt.transaction;
-        } catch {
-          stellarTxHash = receiptHeader;
-        }
+    // Prefer an explicit receipt provided in the HTTP response headers
+    // (Payment-Receipt) or in the JSON body. Do NOT rely on a module-level
+    // `lastTxHash` value because parallel payments can race and overwrite
+    // that shared state.
+    const receiptHeader =
+      response.headers.get('Payment-Receipt') || response.headers.get('payment-receipt');
+    if (receiptHeader) {
+      try {
+        const receipt = JSON.parse(Buffer.from(receiptHeader, 'base64').toString());
+        stellarTxHash = receipt.reference || receipt.hash || receipt.transaction || receipt.stellarTxHash;
+      } catch {
+        // If header is not base64 JSON, treat it as a raw hash
+        stellarTxHash = receiptHeader;
       }
+    }
+
+    // Fallbacks from body
+    if (!stellarTxHash && data.receipt) {
+      stellarTxHash = data.receipt.stellarTxHash || data.receipt.reference || data.receipt.hash || data.receipt.transaction;
+    }
+    if (!stellarTxHash && data.order && data.order.receipt) {
+      stellarTxHash = data.order.receipt;
     }
 
     mppOrderId = data.order?.id;
@@ -1372,12 +1381,13 @@ export async function payBill(
 
 // --- Tool: Get spending summary ---
 export function getSpendingSummary() {
+  const policy = loadPolicy();
   const total =
     spendingTracker.medications +
     spendingTracker.bills +
     spendingTracker.serviceFees;
   return {
-    policy: currentPolicy,
+    policy,
     spending: {
       medications: +spendingTracker.medications.toFixed(2),
       bills: +spendingTracker.bills.toFixed(2),
@@ -1386,11 +1396,9 @@ export function getSpendingSummary() {
     },
     budgetRemaining: {
       medications: +(
-        currentPolicy.medicationMonthlyBudget - spendingTracker.medications
+        policy.medicationMonthlyBudget - spendingTracker.medications
       ).toFixed(2),
-      bills: +(currentPolicy.billMonthlyBudget - spendingTracker.bills).toFixed(
-        2,
-      ),
+      bills: +(policy.billMonthlyBudget - spendingTracker.bills).toFixed(2),
     },
     transactionCount: spendingTracker.transactions.length,
     recentTransactions: spendingTracker.transactions.slice(-5),

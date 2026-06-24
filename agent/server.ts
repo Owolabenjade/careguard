@@ -265,7 +265,9 @@ async function runAgent(task: string) {
     const message = choice.message;
     messages.push(message);
 
-    if (message.content) {
+    if (typeof message.content === 'string') {
+      // Accept empty-string content as an explicit empty response from the LLM
+      // to avoid leaking previous-iteration text as a stale final response.
       finalResponse = message.content;
     }
 
