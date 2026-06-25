@@ -141,6 +141,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     const rid = (input.recipient_id as string) || "rosa";
     setCurrentRecipient(rid);
     const dName = input.drug_name as string | undefined;
+    const dosage = input.dosage as string | undefined;
     const zip = input.zip_code as string | undefined;
     const pharmId = input.pharmacy_id as string | undefined;
     const pharmName = input.pharmacy_name as string | undefined;
@@ -152,7 +153,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     const cat = input.category as string | undefined;
 
     switch (name) {
-      case "compare_pharmacy_prices": result = await comparePharmacyPrices(dName || "", zip); break;
+      case "compare_pharmacy_prices": result = await comparePharmacyPrices(dName || "", zip, dosage); break;
       case "audit_medical_bill": {
         let items;
         if (typeof input.line_items_json === "string") {
@@ -562,6 +563,14 @@ function validatePolicyPayload(body: any): { ok: true; policy: any } | { ok: fal
   }
   if (typeof body.approvalThreshold === "number" && typeof body.dailyLimit === "number" && body.approvalThreshold > body.dailyLimit) {
     errors.push("approvalThreshold cannot exceed dailyLimit");
+  }
+  if (
+    typeof body.medicationMonthlyBudget === "number" &&
+    typeof body.billMonthlyBudget === "number" &&
+    typeof body.monthlyLimit === "number" &&
+    body.medicationMonthlyBudget + body.billMonthlyBudget > body.monthlyLimit
+  ) {
+    errors.push("medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit");
   }
   if (errors.length > 0) return { ok: false, errors };
   const policy = Object.fromEntries(fields.map((f) => [f, body[f]]));

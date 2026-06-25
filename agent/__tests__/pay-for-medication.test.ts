@@ -4,18 +4,28 @@
  */
 
 // vi.hoisted runs before any vi.mock factory
-const { mockMppFetch, onProgressHolder } = vi.hoisted(() => {
+const { mockMppFetch, onProgressHolder, mockFiles } = vi.hoisted(() => {
   process.env.AGENT_SECRET_KEY = "SBWWZYCAFDDJXNRRMKSFNRB6OTVZHTCMPUCVZ4FBZLSPHFKHYLPRTJCD";
+  process.env.BILL_PROVIDER_PUBLIC_KEY = "GBILLPROVIDER";
   const onProgressHolder: { fn?: (event: any) => void } = {};
-  return { mockMppFetch: vi.fn(), onProgressHolder };
+  return { mockMppFetch: vi.fn(), onProgressHolder, mockFiles: new Map<string, string>() };
 });
 
 vi.mock("dotenv/config", () => ({}));
 vi.mock("fs", () => ({
-  readFileSync: vi.fn().mockReturnValue("{}"),
-  writeFileSync: vi.fn(),
-  existsSync: vi.fn().mockReturnValue(false),
+  readFileSync: vi.fn((filePath: string) => mockFiles.get(String(filePath)) ?? "{}"),
+  writeFileSync: vi.fn((filePath: string, data: string) => {
+    mockFiles.set(String(filePath), String(data));
+  }),
+  existsSync: vi.fn((filePath: string) => mockFiles.has(String(filePath))),
   mkdirSync: vi.fn(),
+  renameSync: vi.fn((from: string, to: string) => {
+    const data = mockFiles.get(String(from));
+    if (data !== undefined) {
+      mockFiles.set(String(to), data);
+      mockFiles.delete(String(from));
+    }
+  }),
 }));
 vi.mock("@stellar/stellar-sdk", () => ({
   Keypair: { fromSecret: vi.fn().mockReturnValue({ publicKey: () => "GPUB123", sign: vi.fn() }) },
@@ -27,7 +37,7 @@ vi.mock("@stellar/stellar-sdk", () => ({
   }),
   Operation: { payment: vi.fn() },
   Asset: vi.fn(),
-  Horizon: { Server: vi.fn().mockReturnValue({ loadAccount: vi.fn(), submitTransaction: vi.fn() }) },
+  Horizon: { Server: vi.fn().mockReturnValue({ loadAccount: vi.fn(), submitTransaction: vi.fn().mockResolvedValue({ hash: "b".repeat(64) }) }) },
 }));
 vi.mock("@x402/stellar", () => ({
   createEd25519Signer: vi.fn().mockReturnValue({}),
@@ -51,6 +61,7 @@ vi.mock("mppx/client", () => ({
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   payForMedication,
+  payBill,
   checkSpendingPolicy,
   resetSpendingTracker,
   setSpendingPolicy,
@@ -58,13 +69,14 @@ import {
 
 const DEFAULT_POLICY = {
   dailyLimit: 100,
-  monthlyLimit: 500,
+  monthlyLimit: 800,
   medicationMonthlyBudget: 300,
   billMonthlyBudget: 500,
   approvalThreshold: 75,
 };
 
 beforeEach(() => {
+  mockFiles.clear();
   mockMppFetch.mockReset();
   resetSpendingTracker("rosa");
   setSpendingPolicy("rosa", { ...DEFAULT_POLICY });
@@ -165,7 +177,7 @@ describe("payForMedication — MPP failure (Issue #35)", () => {
 // --- Success path ---
 
 describe("payForMedication — success path (Issue #35)", () => {
-  it("returns success:true, creates a completed transaction, and sets stellarTxHash from MPP progress event", async () => {
+  it("returns success:true and creates a completed transaction without relying on progress-event hashes", async () => {
     mockMppFetch.mockImplementationOnce(async () => {
       // Simulate the MPP progress event firing before the response resolves
       onProgressHolder.fn?.({ type: "paid", hash: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890" });
@@ -180,7 +192,7 @@ describe("payForMedication — success path (Issue #35)", () => {
     const tx = (r as any).transaction;
     expect(tx.status).toBe("completed");
     expect(tx.amount).toBe(50);
-    expect(tx.stellarTxHash).toBe("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+    expect(tx.stellarTxHash).toBeUndefined();
   });
 
   it("populates mppOrderId from data.order.id — never stored as stellarTxHash", async () => {
@@ -198,7 +210,7 @@ describe("payForMedication — success path (Issue #35)", () => {
   });
 
   it("sets stellarTxHash from Payment-Receipt header when no progress event fired", async () => {
-    const validHash = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd";
+    const validHash = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
     const encodedReceipt = Buffer.from(
       JSON.stringify({ reference: validHash, hash: "hashfromheader" })
     ).toString("base64");
@@ -270,5 +282,38 @@ describe("checkSpendingPolicy — basic rules (Issue #35)", () => {
     setSpendingPolicy("rosa", { ...DEFAULT_POLICY, medicationMonthlyBudget: 20 });
     const r = checkSpendingPolicy(50, "medications");
     expect(r.allowed).toBe(false);
+  });
+
+  it("blocks medication + bill spending at the global monthly cap", async () => {
+    setSpendingPolicy("rosa", {
+      ...DEFAULT_POLICY,
+      dailyLimit: 500,
+      monthlyLimit: 120,
+      medicationMonthlyBudget: 80,
+      billMonthlyBudget: 40,
+      approvalThreshold: 500,
+    });
+    mockMppFetch.mockResolvedValueOnce({
+      json: async () => ({ success: true, order: { id: "order-global-cap" } }),
+      headers: { get: () => null },
+    });
+
+    await payForMedication("p1", "Pharma", "Drug", 80);
+    await payBill("provider-1", "Hospital", "Visit", 35);
+
+    const r = checkSpendingPolicy(10, "bills");
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("overall monthly limit");
+  });
+
+  it("rejects policy saves where category budgets exceed monthlyLimit", () => {
+    expect(() =>
+      setSpendingPolicy("rosa", {
+        ...DEFAULT_POLICY,
+        monthlyLimit: 100,
+        medicationMonthlyBudget: 80,
+        billMonthlyBudget: 40,
+      }),
+    ).toThrow(/monthlyLimit/);
   });
 });

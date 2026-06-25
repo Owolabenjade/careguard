@@ -21,6 +21,7 @@ import { applySecurityMiddleware } from "../../shared/security-middleware.ts";
 import { logger } from "../../shared/logger.ts";
 import { requestContextMiddleware } from "../../shared/request-context.ts";
 import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
+import { resolveRequestedDosage } from "./dosage.ts";
 
 const PORT = parseInt(process.env.PHARMACY_API_PORT || "3001");
 const PAY_TO = process.env.PHARMACY_1_PUBLIC_KEY;
@@ -73,6 +74,7 @@ applyX402Middleware(app, {
 // x402-protected endpoint
 app.get("/pharmacy/compare", async (req, res) => {
   const drug = (req.query.drug as string || "").toLowerCase().trim();
+  const dosage = resolveRequestedDosage(drug, req.query.dosage as string | undefined);
   const zip = req.query.zip as string || "90210";
 
   if (!drug) { res.status(400).json({ error: "Missing required parameter: drug" }); return; }
@@ -82,10 +84,14 @@ app.get("/pharmacy/compare", async (req, res) => {
     
     // Calculate distance based on zip code (mock implementation uses zip-based variance)
     const zipVariance = parseInt(zip.slice(-2)) % 10; // Use last 2 digits for variance
-    const adjustedPrices = prices.map((p, idx) => ({
-      ...p,
-      distance: p.distance + (zipVariance * 0.5) + (idx * 0.3), // Vary distance by zip
-    }));
+    const adjustedPrices = prices.map((p, idx) => {
+      const distance =
+        typeof p.distance === "number" ? p.distance : parseFloat(p.distance);
+      return {
+        ...p,
+        distance: distance + (zipVariance * 0.5) + (idx * 0.3), // Vary distance by zip
+      };
+    });
     
     const sorted = [...adjustedPrices].sort((a, b) => a.price - b.price);
     const cheapest = sorted[0];
@@ -93,6 +99,7 @@ app.get("/pharmacy/compare", async (req, res) => {
 
     res.json({
       drug: drug.charAt(0).toUpperCase() + drug.slice(1),
+      dosage,
       zipCode: zip,
       usedZipCode: true, // Indicates zip was actually used in calculations
       queryTimestamp: new Date().toISOString(),

@@ -5,6 +5,9 @@
 // same code path a real process restart exercises. The fake fs below is a
 // plain Map kept alive via vi.hoisted() so data written by one "process"
 // is still there when the next "process" boots and reads it back.
+import { vi } from "vitest";
+import { TRANSACTION_CATEGORY } from "../../shared/types.ts";
+
 const { fsState, MOCK_HINT } = vi.hoisted(() => {
   process.env.AGENT_SECRET_KEY = "SBWWZYCAFDDJXNRRMKSFNRB6OTVZHTCMPUCVZ4FBZLSPHFKHYLPRTJCD";
   process.env.MOCK_NETWORK = "1";
@@ -119,7 +122,7 @@ function freshTracker(transactionCount: number) {
       amount: 10,
       recipient: "pharm-1",
       status: "completed" as const,
-      category: "medications",
+      category: TRANSACTION_CATEGORY.MEDICATIONS,
     })),
   };
 }
@@ -152,7 +155,7 @@ describe("Spending tracker persistence across restart (#44)", () => {
     const before = await import("../tools.ts");
     before.setSpendingPolicy({
       dailyLimit: 123,
-      monthlyLimit: 456,
+      monthlyLimit: 500,
       medicationMonthlyBudget: 200,
       billMonthlyBudget: 300,
       approvalThreshold: 90,
@@ -164,7 +167,7 @@ describe("Spending tracker persistence across restart (#44)", () => {
     const summary = after.getSpendingSummary();
 
     expect(summary.policy.dailyLimit).toBe(123);
-    expect(summary.policy.monthlyLimit).toBe(456);
+    expect(summary.policy.monthlyLimit).toBe(500);
     expect(summary.policy.approvalThreshold).toBe(90);
   });
 });

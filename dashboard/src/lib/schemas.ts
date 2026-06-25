@@ -109,11 +109,12 @@ export function validatePolicy(input: unknown): PolicyValidation {
     Number.isFinite(v.medicationMonthlyBudget) &&
     Number.isFinite(v.billMonthlyBudget) &&
     Number.isFinite(v.monthlyLimit) &&
-    v.medicationMonthlyBudget + v.billMonthlyBudget > v.monthlyLimit * 1.2
+    v.medicationMonthlyBudget + v.billMonthlyBudget > v.monthlyLimit
   ) {
-    warnings.push({
+    errors.push({
       field: 'medicationMonthlyBudget',
-      message: 'Combined category budgets exceed 120% of monthly limit',
+      message:
+        'Medication and bill budgets together cannot exceed monthly limit',
     });
   }
 

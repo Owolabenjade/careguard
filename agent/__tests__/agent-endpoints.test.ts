@@ -34,7 +34,7 @@ vi.mock("../tools.ts", () => ({
   getSpendingSummary: vi.fn(() => ({
     policy: {
       dailyLimit: 100,
-      monthlyLimit: 500,
+      monthlyLimit: 800,
       medicationMonthlyBudget: 300,
       billMonthlyBudget: 500,
       approvalThreshold: 75,
@@ -199,7 +199,7 @@ describe("POST /agent/run — validation (Issue #42)", () => {
 describe("POST /agent/policy (Issue #42)", () => {
   const VALID_POLICY = {
     dailyLimit: 150,
-    monthlyLimit: 600,
+    monthlyLimit: 900,
     medicationMonthlyBudget: 350,
     billMonthlyBudget: 550,
     approvalThreshold: 80,
@@ -226,6 +226,13 @@ describe("POST /agent/policy (Issue #42)", () => {
     const res = await auth(request(app).post("/agent/policy"))
       .send({ ...VALID_POLICY, monthlyLimit: 0 });
     expect(res.status).toBe(400);
+  });
+
+  it("category budgets exceeding monthlyLimit → 400", async () => {
+    const res = await auth(request(app).post("/agent/policy"))
+      .send({ ...VALID_POLICY, monthlyLimit: 600 });
+    expect(res.status).toBe(400);
+    expect(res.body.details.join(" ")).toContain("monthlyLimit");
   });
 
   it("non-object body → 400", async () => {

@@ -39,7 +39,14 @@ import {
 } from '@x402/fetch';
 import { createEd25519Signer, ExactStellarScheme } from '@x402/stellar';
 import { createMppClient, type MppClientInstance } from './mpp-client.ts';
-import { STELLAR_TX_HASH_RE, type SpendingPolicy, type Transaction } from '../shared/types.ts';
+import {
+  STELLAR_TX_HASH_RE,
+  TRANSACTION_CATEGORY,
+  isTransactionCategory,
+  normalizeTransactionCategory,
+  type SpendingPolicy,
+  type Transaction,
+} from '../shared/types.ts';
 import { SPENDING_TIMEZONE, getLocalDateStr } from './tz.ts';
 export { SPENDING_TIMEZONE, getLocalDateStr };
 import { appendAuditEntry } from '../shared/audit-log.ts';
@@ -295,7 +302,7 @@ let currentRecipientId = 'rosa';
 
 const DEFAULT_POLICY: SpendingPolicy = {
   dailyLimit: 100,
-  monthlyLimit: 500,
+  monthlyLimit: 800,
   medicationMonthlyBudget: 300,
   billMonthlyBudget: 500,
   approvalThreshold: 75,
@@ -372,6 +379,10 @@ interface SpendingTracker {
   transactions: Transaction[];
 }
 
+type PaymentCategory =
+  | typeof TRANSACTION_CATEGORY.MEDICATIONS
+  | typeof TRANSACTION_CATEGORY.BILLS;
+
 type SpendingPolicyInput = Partial<SpendingPolicy> & {
   dailyLimit: number;
   monthlyLimit: number;
@@ -393,11 +404,49 @@ function createEmptySpendingTracker(): SpendingTracker {
   return { medications: 0, bills: 0, serviceFees: 0, transactions: [] };
 }
 
+function normalizeTransactionCategories(
+  data: SpendingTracker,
+  recipientId?: string,
+): { data: SpendingTracker; migrated: boolean } {
+  let migrated = false;
+  const transactions = (data.transactions || []).map((tx: any) => {
+    if (isTransactionCategory(tx.category)) return tx as Transaction;
+
+    migrated = true;
+    const previousCategory = tx.category;
+    const normalizedTx = {
+      ...tx,
+      category: normalizeTransactionCategory(tx.category),
+    } as Transaction;
+    appendAuditEntry({
+      event: 'transaction.category_migrated',
+      actor: 'system',
+      details: {
+        recipientId: recipientId || currentRecipientId,
+        transactionId: tx.id,
+        previousCategory,
+        currentCategory: TRANSACTION_CATEGORY.SERVICE_FEES,
+      },
+    });
+    return normalizedTx;
+  });
+
+  return {
+    data: { ...data, transactions },
+    migrated,
+  };
+}
+
 function readSpendingFromDisk(recipientId?: string): SpendingTracker {
   const file = getSpendingFile(recipientId);
   if (!existsSync(file)) return createEmptySpendingTracker();
   try {
-    return JSON.parse(readFileSync(file, 'utf-8'));
+    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as SpendingTracker;
+    const normalized = normalizeTransactionCategories(parsed, recipientId);
+    if (normalized.migrated) {
+      saveSpending(normalized.data, recipientId);
+    }
+    return normalized.data;
   } catch (err: any) {
     logger.warn(
       { file, error: err.message },
@@ -458,11 +507,11 @@ function recordServiceFee(
     recipient,
     stellarTxHash,
     status: 'completed',
-    category: 'service_fees',
+    category: TRANSACTION_CATEGORY.SERVICE_FEES,
   });
   agentTransactionsTotal.inc({ status: 'completed' });
   agentSpendingUsd.set(
-    { category: 'service_fees' },
+    { category: TRANSACTION_CATEGORY.SERVICE_FEES },
     spendingTracker.serviceFees,
   );
   saveSpending(spendingTracker);
@@ -484,6 +533,17 @@ function loadPolicy(recipientId?: string): SpendingPolicy {
 
 function savePolicy(policy: SpendingPolicy, recipientId?: string) {
   writeFileSync(getPolicyFile(recipientId), JSON.stringify(policy, null, 2));
+}
+
+function assertValidSpendingPolicy(policy: SpendingPolicy) {
+  if (
+    policy.medicationMonthlyBudget + policy.billMonthlyBudget >
+    policy.monthlyLimit
+  ) {
+    throw new Error(
+      'Invalid spending policy: medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit',
+    );
+  }
 }
 
 let currentPolicy: SpendingPolicy = loadPolicy();
@@ -512,6 +572,7 @@ export function setSpendingPolicy(
       sms: policy.notifications?.sms ?? false,
     },
   };
+  assertValidSpendingPolicy(normalizedPolicy);
   const previous = currentPolicy;
   currentPolicy = normalizedPolicy;
   savePolicy(normalizedPolicy);
@@ -562,8 +623,9 @@ export function resetSpendingTracker(recipientId?: string) {
 export async function comparePharmacyPrices(
   drugName: string,
   zipCode: string = '90210',
+  dosage: string = 'unspecified',
 ) {
-  const url = `${PHARMACY_API}/pharmacy/compare?drug=${encodeURIComponent(drugName)}&zip=${encodeURIComponent(zipCode)}`;
+  const url = `${PHARMACY_API}/pharmacy/compare?drug=${encodeURIComponent(drugName)}&dosage=${encodeURIComponent(dosage)}&zip=${encodeURIComponent(zipCode)}`;
   const fee = getToolFee('comparePharmacyPrices');
   logger.info({ drug: drugName, fee }, '[x402] paying for pharmacy price query');
 
@@ -574,6 +636,7 @@ export async function comparePharmacyPrices(
     });
     const data = {
       drug: drugName,
+      dosage,
       zipCode,
       protocol: {
         name: 'x402',
@@ -931,20 +994,36 @@ export async function checkDrugInteractions(medications: string[]) {
 // --- Tool: Check spending policy ---
 export function checkSpendingPolicy(
   amount: number,
-  category: 'medications' | 'bills',
+  category: PaymentCategory,
 ) {
   // Always load the latest policy from disk so multi-instance deployments
   // pick up caregiver updates performed via POST /agent/policy.
   const policy = loadPolicy();
   const budget =
-    category === 'medications'
+    category === TRANSACTION_CATEGORY.MEDICATIONS
       ? policy.medicationMonthlyBudget
       : policy.billMonthlyBudget;
   const currentSpending =
-    category === 'medications'
+    category === TRANSACTION_CATEGORY.MEDICATIONS
       ? spendingTracker.medications
       : spendingTracker.bills;
   const remaining = budget - currentSpending;
+  const totalMonthlySpending =
+    spendingTracker.medications +
+    spendingTracker.bills +
+    spendingTracker.serviceFees;
+  const globalRemaining = policy.monthlyLimit - totalMonthlySpending;
+
+  if (amount > globalRemaining) {
+    return {
+      allowed: false,
+      reason: `Payment of $${amount.toFixed(2)} would exceed overall monthly limit. Monthly limit: $${policy.monthlyLimit}, spent: $${totalMonthlySpending.toFixed(2)}, remaining: $${globalRemaining.toFixed(2)}`,
+      requiresApproval: false,
+      currentSpending,
+      budgetRemaining: remaining,
+      globalBudgetRemaining: globalRemaining,
+    };
+  }
 
   if (amount > remaining) {
     return {
@@ -1152,7 +1231,7 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
 
   let result: any;
   try {
-    if (tx.category === 'medications') {
+    if (tx.category === TRANSACTION_CATEGORY.MEDICATIONS) {
       const match = tx.description.match(/(.+) from (.+)/);
       if (!match) throw new Error('Cannot parse transaction description');
       const [, drugName, pharmacyName] = match;
@@ -1162,7 +1241,7 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
         drugName,
         tx.amount,
       );
-    } else if (tx.category === 'bills') {
+    } else if (tx.category === TRANSACTION_CATEGORY.BILLS) {
       const match = tx.description.match(/(.+) — (.+)/);
       if (!match) throw new Error('Cannot parse transaction description');
       const [, description, providerName] = match;
@@ -1193,15 +1272,15 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
   tx.stellarTxHash = result.stellarTxHash;
   if (result.mppOrderId) tx.mppOrderId = result.mppOrderId;
 
-  if (tx.category === 'medications') {
+  if (tx.category === TRANSACTION_CATEGORY.MEDICATIONS) {
     spendingTracker.medications += tx.amount;
     agentSpendingUsd.set(
-      { category: 'medications' },
+      { category: TRANSACTION_CATEGORY.MEDICATIONS },
       spendingTracker.medications,
     );
-  } else if (tx.category === 'bills') {
+  } else if (tx.category === TRANSACTION_CATEGORY.BILLS) {
     spendingTracker.bills += tx.amount;
-    agentSpendingUsd.set({ category: 'bills' }, spendingTracker.bills);
+    agentSpendingUsd.set({ category: TRANSACTION_CATEGORY.BILLS }, spendingTracker.bills);
   }
   agentTransactionsTotal.inc({ status: 'completed' });
   tracker.transactions = tracker.transactions.map((t: any) =>
@@ -1260,7 +1339,10 @@ export async function payForMedication(
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
     };
   }
-  const policyCheck = checkSpendingPolicy(amount, 'medications');
+  const policyCheck = checkSpendingPolicy(
+    amount,
+    TRANSACTION_CATEGORY.MEDICATIONS,
+  );
   if (!policyCheck.allowed) {
     const reason = policyCheck.reason!.includes('daily')
       ? 'daily_limit'
@@ -1286,7 +1368,7 @@ export async function payForMedication(
       amount,
       recipient: pharmacyId,
       status: 'pending',
-      category: 'medications',
+      category: TRANSACTION_CATEGORY.MEDICATIONS,
       pendingUntil,
       submittedAt,
     };
@@ -1321,14 +1403,14 @@ export async function payForMedication(
     stellarTxHash: paymentResult.stellarTxHash,
     mppOrderId: paymentResult.mppOrderId,
     status: 'completed',
-    category: 'medications',
+    category: TRANSACTION_CATEGORY.MEDICATIONS,
   };
 
   spendingTracker.medications += amount;
   spendingTracker.transactions.push(tx);
   agentTransactionsTotal.inc({ status: 'completed' });
   agentSpendingUsd.set(
-    { category: 'medications' },
+    { category: TRANSACTION_CATEGORY.MEDICATIONS },
     spendingTracker.medications,
   );
   saveSpending(spendingTracker);
@@ -1370,7 +1452,7 @@ export async function payBill(
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
     };
   }
-  const policyCheck = checkSpendingPolicy(amount, 'bills');
+  const policyCheck = checkSpendingPolicy(amount, TRANSACTION_CATEGORY.BILLS);
   if (!policyCheck.allowed) {
     const reason = policyCheck.reason!.includes('daily')
       ? 'daily_limit'
@@ -1396,7 +1478,7 @@ export async function payBill(
       amount,
       recipient: providerId,
       status: 'pending',
-      category: 'bills',
+      category: TRANSACTION_CATEGORY.BILLS,
       pendingUntil,
       submittedAt,
     };
@@ -1463,13 +1545,13 @@ export async function payBill(
     recipient: providerId,
     stellarTxHash,
     status: 'completed',
-    category: 'bills',
+    category: TRANSACTION_CATEGORY.BILLS,
   };
 
   spendingTracker.bills += amount;
   spendingTracker.transactions.push(tx);
   agentTransactionsTotal.inc({ status: 'completed' });
-  agentSpendingUsd.set({ category: 'bills' }, spendingTracker.bills);
+  agentSpendingUsd.set({ category: TRANSACTION_CATEGORY.BILLS }, spendingTracker.bills);
   saveSpending(spendingTracker);
 
   // Notify on significant payment (Issue #265)
@@ -1671,6 +1753,7 @@ const amountSchema = z.union([z.number(), z.string()]);
 const TOOL_INPUT_SCHEMAS = {
   compare_pharmacy_prices: z.object({
     drug_name: z.string().min(1),
+    dosage: z.string().min(1),
     zip_code: z.string().optional(),
     recipient_id: recipientIdSchema,
   }).strict(),
@@ -1777,15 +1860,16 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'compare_pharmacy_prices',
     description:
-      'Compare medication prices across multiple pharmacies. Pays $0.002 USDC per query via x402 on Stellar. Returns prices sorted cheapest to most expensive, with potential savings. Each pharmacy has an inStock field: "unknown" means real-time inventory is unavailable (proceed with caution), true means in stock. Never assume a medication is in stock if inStock is "unknown" — confirm with the pharmacy before ordering.',
+      'Compare medication prices across multiple pharmacies. Pays $0.002 USDC per query via x402 on Stellar. Pass the medication dosage exactly as known; the returned dosage field is reliable and echoed from the request for safety. Returns prices sorted cheapest to most expensive, with potential savings. Each pharmacy has an inStock field: "unknown" means real-time inventory is unavailable (proceed with caution), true means in stock. Never assume a medication is in stock if inStock is "unknown" — confirm with the pharmacy before ordering.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         drug_name: { type: 'string', description: 'Name of the medication (e.g., Lisinopril, Metformin)' },
+        dosage: { type: 'string', description: 'Medication dosage exactly as prescribed or provided (e.g., 10mg)' },
         zip_code: { type: 'string', description: 'ZIP code for pharmacy location (default: 90210)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
-      required: ['drug_name'],
+      required: ['drug_name', 'dosage'],
     }),
   },
   {

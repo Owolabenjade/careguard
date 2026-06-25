@@ -78,6 +78,37 @@ export interface SpendingPolicy {
 // A confirmed Stellar transaction hash is always 64 lowercase/uppercase hex chars.
 export const STELLAR_TX_HASH_RE = /^[0-9a-f]{64}$/i;
 
+export const TRANSACTION_CATEGORY = {
+  MEDICATIONS: 'medications',
+  BILLS: 'bills',
+  SERVICE_FEES: 'service_fees',
+} as const;
+
+export const TRANSACTION_CATEGORIES = [
+  TRANSACTION_CATEGORY.MEDICATIONS,
+  TRANSACTION_CATEGORY.BILLS,
+  TRANSACTION_CATEGORY.SERVICE_FEES,
+] as const;
+
+export type TransactionCategory = (typeof TRANSACTION_CATEGORIES)[number];
+
+export function isTransactionCategory(
+  category: unknown,
+): category is TransactionCategory {
+  return (
+    typeof category === 'string' &&
+    (TRANSACTION_CATEGORIES as readonly string[]).includes(category)
+  );
+}
+
+export function normalizeTransactionCategory(
+  category: unknown,
+): TransactionCategory {
+  return isTransactionCategory(category)
+    ? category
+    : TRANSACTION_CATEGORY.SERVICE_FEES;
+}
+
 export interface Transaction {
   id: string;
   timestamp: string;
@@ -97,7 +128,7 @@ export interface Transaction {
     | 'disputed'
     | 'cancelled'
     | 'rejected';
-  category: string;
+  category: TransactionCategory;
   pendingUntil?: string;
   submittedAt?: string;
 }

@@ -23,7 +23,7 @@ const AGENT_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3004';
 
 const DEFAULT_POLICY = {
   dailyLimit: 100,
-  monthlyLimit: 500,
+  monthlyLimit: 800,
   medicationMonthlyBudget: 300,
   billMonthlyBudget: 500,
   approvalThreshold: 75,
