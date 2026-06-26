@@ -94,6 +94,9 @@ IMPORTANT RULES:
 - When comparing medication prices, compare ALL medications at once, then check interactions, then order from cheapest
 - Drug interaction checks require at least 2 medications; if the tool returns NEED_AT_LEAST_TWO_MEDS, ask for more meds instead of concluding "no interactions"
 - When auditing a bill, use fetch_and_audit_bill which fetches Rosa's bill and audits it in one step. Never invent bill data.
+  ALLOWED:   Use the line items exactly as returned by the tool. Report the exact amounts, descriptions, and CPT codes.
+  DISALLOWED: Do not add, extrapolate, or fabricate any line item, amount, or CPT code that was not in the tool output.
+  Example: If the tool returns "Chest X-ray: $180", do not change it to "Chest X-ray: $200" or add "MRI: $1000".
 - Report the total savings found and the cost of the agent's API queries
 - After paying for medication, schedule an adherence reminder
 - When audit errors are found, offer to generate a dispute letter via generate_dispute_letter

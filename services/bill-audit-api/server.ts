@@ -147,7 +147,7 @@ function auditBill(lineItems: BillItem[]) {
   for (const item of lineItems) {
     totalCharged += item.chargedAmount;
     const fairRate = FAIR_MARKET_RATES[item.cptCode];
-    const fairAmount = fairRate ? fairRate.fairRate * item.quantity : null;
+    const fairAmount = fairRate !== undefined ? fairRate.fairRate * item.quantity : null;
     const threshold = getAuditThreshold(item.cptCode);
 
     seenCodes[item.cptCode] = (seenCodes[item.cptCode] || 0) + 1;
@@ -157,7 +157,7 @@ function auditBill(lineItems: BillItem[]) {
       continue;
     }
 
-    if (fairAmount && item.chargedAmount > fairAmount * threshold) {
+    if (fairAmount !== null && item.chargedAmount > fairAmount * threshold) {
       errorCount++;
       const suggestedAmount = +(fairAmount * 1.2).toFixed(2);
       totalCorrect += suggestedAmount;
@@ -165,7 +165,7 @@ function auditBill(lineItems: BillItem[]) {
       continue;
     }
 
-    const suggested = fairAmount ? Math.min(item.chargedAmount, +(fairAmount * 1.2).toFixed(2)) : item.chargedAmount;
+    const suggested = fairAmount !== null ? Math.min(item.chargedAmount, +(fairAmount * 1.2).toFixed(2)) : item.chargedAmount;
     totalCorrect += suggested;
     results.push({ description: item.description, cptCode: item.cptCode, quantity: item.quantity, chargedAmount: item.chargedAmount, fairMarketRate: fairAmount, status: "valid", errorDescription: null, suggestedAmount: suggested });
   }

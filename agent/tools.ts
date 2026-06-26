@@ -57,6 +57,7 @@ import {
   getFlaggedAdherences,
   confirmAdherence,
 } from '../shared/adherence.ts';
+import { Journal } from './journal.ts';
 import {
   x402SettlementsTotal,
   paymentsUsdcTotal,
@@ -87,7 +88,8 @@ const USDC_ISSUER =
   'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 const MIN_FEE_STROOPS = 100;
-const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000'); // Cap at 0.01 XLM default
+const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000');
+const STELLAR_TIMEBOUNDS_SECONDS = parseInt(process.env.STELLAR_TIMEBOUNDS_SECONDS || "60", 10);
 
 if (!AGENT_SECRET_KEY) throw new Error('AGENT_SECRET_KEY required in .env');
 
@@ -131,6 +133,7 @@ async function submitTransactionWithRetry(
   tx: any,
   maxRetries = 2,
   timeoutMs = 35000,
+  rebuildTx?: () => Promise<any>
 ): Promise<any> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -139,16 +142,15 @@ async function submitTransactionWithRetry(
       return result;
     } catch (err: any) {
       lastError = err;
-      // Don't retry if the server responded with a transaction failure
       if (err?.response?.status) throw err;
-      // Don't retry if the transaction expired
-      const msg = err?.message ?? '';
-      if (
-        msg.includes('tx_bad_seq') ||
-        msg.includes('tx_too_early') ||
-        msg.includes('tx_too_late')
-      )
-        throw err;
+      const msg = err?.message ?? "";
+      // tx_too_late: timebounds expired — retry once with fresh timebounds if rebuild fn provided
+      if (msg.includes("tx_too_late") && rebuildTx && attempt < maxRetries) {
+        logger.warn({ attempt: attempt + 1 }, "[Stellar] tx_too_late, rebuilding with fresh timebounds");
+        tx = await rebuildTx();
+        continue;
+      }
+      if (msg.includes("tx_bad_seq") || msg.includes("tx_too_early") || msg.includes("tx_too_late")) throw err;
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 500;
         logger.warn(
@@ -1513,21 +1515,39 @@ export async function payBill(
   let stellarTxHash: string | undefined;
 
   try {
-    const account = await horizonServer.loadAccount(agentKeypair.publicKey());
-    const usdcAsset = new Asset('USDC', USDC_ISSUER);
+    const buildStellarTx = async () => {
+      const account = await horizonServer.loadAccount(agentKeypair.publicKey());
+      const usdcAsset = new Asset("USDC", USDC_ISSUER);
 
-    const paymentOp = Operation.payment({
-      destination: recipientKey,
-      asset: usdcAsset,
-      amount: amount.toFixed(7),
-    });
+      const stellarTx = new TransactionBuilder(account, {
+        fee: "100",
+        networkPassphrase: Networks.TESTNET,
+      })
+        .addOperation(
+          Operation.payment({
+            destination: recipientKey,
+            asset: usdcAsset,
+            amount: amount.toFixed(7),
+          })
+        )
+        .setTimeout(STELLAR_TIMEBOUNDS_SECONDS)
+        .build();
 
-    const result = await submitTransactionWithFeeBump(
-      horizonServer,
-      account,
-      [paymentOp],
-      agentKeypair,
-    );
+      stellarTx.sign(agentKeypair);
+
+      const sigHint = stellarTx.signatures[0]?.hint();
+      if (!sigHint || !sigHint.equals(agentKeypair.signatureHint())) {
+        throw new Error(
+          `Signer mismatch: expected ${agentKeypair.publicKey()} — refusing to submit`
+        );
+      }
+      return stellarTx;
+    };
+
+    let stellarTx = await buildStellarTx();
+    console.log(`  [Stellar] Signer verified: ${agentKeypair.publicKey().slice(0, 8)}...`);
+
+    const result = await submitTransactionWithRetry(horizonServer, stellarTx, 2, 35000, buildStellarTx);
 
     stellarTxHash = result.hash;
     logger.info({ txHash: stellarTxHash, fee: result.fee }, '[Stellar] TX confirmed');

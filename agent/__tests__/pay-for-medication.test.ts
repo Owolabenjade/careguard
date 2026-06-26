@@ -4,11 +4,11 @@
  */
 
 // vi.hoisted runs before any vi.mock factory
-const { mockMppFetch, onProgressHolder, mockFiles } = vi.hoisted(() => {
+const { mockMppFetch, onProgressHolder, mockFiles, MOCK_HINT } = vi.hoisted(() => {
   process.env.AGENT_SECRET_KEY = "SBWWZYCAFDDJXNRRMKSFNRB6OTVZHTCMPUCVZ4FBZLSPHFKHYLPRTJCD";
   process.env.BILL_PROVIDER_PUBLIC_KEY = "GBILLPROVIDER";
   const onProgressHolder: { fn?: (event: any) => void } = {};
-  return { mockMppFetch: vi.fn(), onProgressHolder, mockFiles: new Map<string, string>() };
+  return { mockMppFetch: vi.fn(), onProgressHolder, mockFiles: new Map<string, string>(), MOCK_HINT: Buffer.from([0xca, 0xfe, 0xba, 0xbe]) };
 });
 
 vi.mock("dotenv/config", () => ({}));
@@ -17,6 +17,8 @@ vi.mock("fs", () => ({
   writeFileSync: vi.fn((filePath: string, data: string) => {
     mockFiles.set(String(filePath), String(data));
   }),
+  appendFileSync: vi.fn(),
+  unlinkSync: vi.fn(),
   existsSync: vi.fn((filePath: string) => mockFiles.has(String(filePath))),
   mkdirSync: vi.fn(),
   renameSync: vi.fn((from: string, to: string) => {
@@ -28,12 +30,12 @@ vi.mock("fs", () => ({
   }),
 }));
 vi.mock("@stellar/stellar-sdk", () => ({
-  Keypair: { fromSecret: vi.fn().mockReturnValue({ publicKey: () => "GPUB123", sign: vi.fn() }) },
+  Keypair: { fromSecret: vi.fn().mockReturnValue({ publicKey: () => "GPUB123", sign: vi.fn(), signatureHint: () => MOCK_HINT }) },
   Networks: { TESTNET: "Test SDF Network ; September 2015" },
   TransactionBuilder: vi.fn().mockReturnValue({
     addOperation: vi.fn().mockReturnThis(),
     setTimeout: vi.fn().mockReturnThis(),
-    build: vi.fn().mockReturnValue({ sign: vi.fn() }),
+    build: vi.fn().mockReturnValue({ sign: vi.fn(), signatures: [{ hint: () => MOCK_HINT }] }),
   }),
   Operation: { payment: vi.fn() },
   Asset: vi.fn(),

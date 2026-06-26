@@ -19,6 +19,8 @@ vi.mock("fs", () => ({
       : "{}",
   ),
   writeFileSync: vi.fn(),
+  appendFileSync: vi.fn(),
+  unlinkSync: vi.fn(),
   existsSync: vi.fn((filePath: string) => String(filePath).includes("spending.json")),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
