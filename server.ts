@@ -10,7 +10,7 @@
 
 import "dotenv/config";
 import { createHash } from "crypto";
-import express from "express";
+import express, { type Express } from "express";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
 import OpenAI from "openai";
 import { Mppx, Store } from "mppx/server";
@@ -175,7 +175,7 @@ let _profileData = {
 };
 
 // --- Express App ---
-const app = express();
+const app: Express = express();
 let isDraining = false;
 
 function requireCaregiverToken(req: express.Request, res: express.Response, next: express.NextFunction) {
