@@ -255,7 +255,7 @@ async function waitForStellarSettlement(
 
 // --- x402 Client: Auto-handles 402 Payment Required for API queries ---
 // Use stellar:testnet or stellar:public scheme based on STELLAR_NETWORK env
-const x402SchemeId = `stellar:${STELLAR_CONFIG.networkType}`;
+const x402SchemeId = `stellar:${STELLAR_CONFIG.networkType}` as `${string}:${string}`;
 const x402Fetch = isMockNetwork()
   ? fetch
   : wrapFetchWithPayment(
@@ -683,7 +683,7 @@ function recordServiceFee(
     amount,
     recipient,
     stellarTxHash,
-    status: 'completed',
+    status: 'completed' as const,
     category: TRANSACTION_CATEGORY.SERVICE_FEES,
   };
   spendingTracker.transactions.push(tx);
@@ -1550,11 +1550,11 @@ export async function payForMedication(
       const tx = {
         id: `tx-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        type: 'medication',
+        type: 'medication' as const,
         description: `${drugName} from ${pharmacyName}`,
         amount,
         recipient: pharmacyId,
-        status: 'blocked',
+        status: 'blocked' as const,
         category: TRANSACTION_CATEGORY.MEDICATIONS,
       };
       spendingTracker.transactions.push(tx);
@@ -1576,11 +1576,11 @@ export async function payForMedication(
       const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
         id: `tx-${Date.now()}`,
         timestamp: submittedAt,
-        type: 'medication',
+        type: 'medication' as const,
         description: `${drugName} from ${pharmacyName}`,
         amount,
         recipient: pharmacyId,
-        status: 'pending',
+        status: 'pending' as const,
         category: TRANSACTION_CATEGORY.MEDICATIONS,
         pendingUntil,
         submittedAt,
@@ -1592,54 +1592,6 @@ export async function payForMedication(
       return {
         success: false,
         error: `REQUIRES CAREGIVER APPROVAL: ${amount.toFixed(2)} exceeds the ${currentPolicy.approvalThreshold} approval threshold.`,
-        transaction: tx,
-      };
-    }
-    // Reserve the budget before releasing the mutex so no other concurrent call
-    // can observe the pre-payment balance and pass a check it should fail.
-    spendingTracker.medications += amount;
-  } finally {
-    release();
-  }
-      amount,
-      TRANSACTION_CATEGORY.MEDICATIONS,
-    );
-    if (!policyCheck.allowed) {
-      const reason = policyCheck.reason!.includes('daily')
-        ? 'daily_limit'
-        : 'budget';
-      policyBlocksTotal.inc({ reason });
-      return {
-        success: false,
-        error: `BLOCKED BY SPENDING POLICY: ${policyCheck.reason}`,
-      };
-    }
-    if (policyCheck.requiresApproval && !skipApproval) {
-      policyBlocksTotal.inc({ reason: 'approval_required' });
-      const holdSeconds = (currentPolicy as any)?.holdTimeSeconds ?? 0;
-      const submittedAt = new Date().toISOString();
-      const pendingUntil = new Date(
-        Date.now() + holdSeconds * 1000,
-      ).toISOString();
-      const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
-        id: `tx-${Date.now()}`,
-        timestamp: submittedAt,
-        type: 'medication',
-        description: `${drugName} from ${pharmacyName}`,
-        amount,
-        recipient: pharmacyId,
-        status: 'pending',
-        category: TRANSACTION_CATEGORY.MEDICATIONS,
-        pendingUntil,
-        submittedAt,
-      };
-      spendingTracker.transactions.push(tx);
-      agentTransactionsTotal.inc({ status: 'pending' });
-      // Append only the new pending transaction — O(1) write (Issue #205)
-      appendTransaction(tx);
-      return {
-        success: false,
-        error: `REQUIRES CAREGIVER APPROVAL: $${amount.toFixed(2)} exceeds the $${currentPolicy.approvalThreshold} approval threshold.`,
         transaction: tx,
       };
     }
@@ -1666,13 +1618,13 @@ export async function payForMedication(
   const tx: Transaction = {
     id: `tx-${Date.now()}`,
     timestamp: new Date().toISOString(),
-    type: 'medication',
+    type: 'medication' as const,
     description: `${drugName} from ${pharmacyName} [MPP Charge]`,
     amount,
     recipient: pharmacyId,
     stellarTxHash: paymentResult.stellarTxHash,
     mppOrderId: paymentResult.mppOrderId,
-    status: 'completed',
+    status: 'completed' as const,
     category: TRANSACTION_CATEGORY.MEDICATIONS,
   };
 
@@ -1738,11 +1690,11 @@ export async function payBill(
       const tx = {
         id: `tx-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        type: 'bill',
+        type: 'bill' as const,
         description: `${description} — ${providerName}`,
         amount,
         recipient: providerId,
-        status: 'blocked',
+        status: 'blocked' as const,
         category: TRANSACTION_CATEGORY.BILLS,
       };
       spendingTracker.transactions.push(tx);
@@ -1764,11 +1716,11 @@ export async function payBill(
       const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
         id: `tx-${Date.now()}`,
         timestamp: submittedAt,
-        type: 'bill',
+        type: 'bill' as const,
         description: `${description} — ${providerName}`,
         amount,
         recipient: providerId,
-        status: 'pending',
+        status: 'pending' as const,
         category: TRANSACTION_CATEGORY.BILLS,
         pendingUntil,
         submittedAt,
@@ -1787,7 +1739,6 @@ export async function payBill(
     spendingTracker.bills += amount;
   } finally {
     releaseBill();
-  }
   }
 
   // Execute real Stellar USDC transfer (outside the mutex — can be slow)
@@ -1858,12 +1809,12 @@ export async function payBill(
   const tx: Transaction = {
     id: `tx-${Date.now()}`,
     timestamp: new Date().toISOString(),
-    type: 'bill',
+    type: 'bill' as const,
     description: `${description} — ${providerName} [Stellar USDC]`,
     amount,
     recipient: providerId,
     stellarTxHash,
-    status: 'completed',
+    status: 'completed' as const,
     category: TRANSACTION_CATEGORY.BILLS,
   };
 
