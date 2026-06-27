@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -56,6 +56,12 @@ describe("PDF Report Snapshot Tests", () => {
     if (!pdfParse) {
       pdfParse = (await import("pdf-parse")).default;
     }
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-27T08:38:42.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("should generate a correct Bill Audit PDF report", async () => {
