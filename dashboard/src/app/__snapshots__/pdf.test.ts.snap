@@ -7,7 +7,7 @@ CareGuard
 AI Healthcare Agent on Stellar
 Medical Bill Audit Report
 Patient: Rosa Garcia, 78 | Facility: General Hospital
-Generated: 6/27/2026, 8:38:42 AM
+Generated: 6/27/2026, 9:38:42 AM
 Total Charged: $1200Overcharges Found: $200Corrected Amount: $1000
 2 errors found (16.67% of total bill)
 DescriptionCPT CodeQtyChargedStatusSuggested
@@ -24,7 +24,7 @@ CareGuard
 AI Healthcare Agent on Stellar
 Medication Price Comparison Report
 Patient: Rosa Garcia, 78 | 1 Medications Compared
-Generated: 6/27/2026, 8:38:42 AM
+Generated: 6/27/2026, 9:38:42 AM
 Total Potential Savings: $35.00/month ($420.00/year)
 Lisinopril 10mgSave $35/mo (77.78%)
 PharmacyPriceDistanceIn Stock
@@ -43,7 +43,7 @@ CareGuard
 AI Healthcare Agent on Stellar
 Transaction Report
 Patient: Rosa Garcia, 78 | 1 Transactions
-Generated: 6/27/2026, 8:38:42 AM
+Generated: 6/27/2026, 9:38:42 AM
 Medications: $10.00Bills: $0.00API Fees (x402): $0.0300
 Total: $10.03
 TimeTypeDescriptionAmountStatusStellar Tx
