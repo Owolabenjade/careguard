@@ -1209,7 +1209,7 @@ export function checkSpendingPolicy(
 
   return {
     allowed: true,
-    requiresApproval: amount > policy.approvalThreshold,
+    requiresApproval: amount >= policy.approvalThreshold,
     currentSpending,
     budgetRemaining: remaining - amount,
   };
