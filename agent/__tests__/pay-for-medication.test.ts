@@ -60,7 +60,7 @@ vi.mock("mppx/client", () => ({
   Mppx: { create: vi.fn().mockReturnValue({ fetch: mockMppFetch }) },
 }));
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   payForMedication,
   payBill,
@@ -354,5 +354,41 @@ describe("payForMedication — concurrent calls cannot exceed budget (Issue #209
 
     expect(successes.length).toBe(3);
     expect(blocked.length).toBe(2);
+  });
+});
+
+// --- Platform cap (issue #83) ---
+
+describe("payForMedication — platform cap (issue #83)", () => {
+  const origCap = process.env.MAX_SINGLE_TX_USDC;
+
+  beforeEach(() => {
+    process.env.MAX_SINGLE_TX_USDC = "50";
+    resetSpendingTracker("rosa");
+    setSpendingPolicy("rosa", { ...DEFAULT_POLICY, medicationMonthlyBudget: 500, monthlyLimit: 1000, billMonthlyBudget: 500 });
+  });
+
+  afterEach(() => {
+    if (origCap === undefined) delete process.env.MAX_SINGLE_TX_USDC;
+    else process.env.MAX_SINGLE_TX_USDC = origCap;
+  });
+
+  it("blocks payForMedication above the platform cap", async () => {
+    const r = await payForMedication("p1", "Pharma", "Drug", 51);
+    expect(r.success).toBe(false);
+    expect((r as any).error).toContain("BLOCKED BY PLATFORM CAP");
+  });
+
+  it("blocks payBill above the platform cap", async () => {
+    const r = await payBill("provider1", "Hospital", "Visit", 51);
+    expect(r.success).toBe(false);
+    expect((r as any).error).toContain("BLOCKED BY PLATFORM CAP");
+  });
+
+  it("allows payForMedication equal to the platform cap (goes to policy check)", async () => {
+    // Amount equals cap — not blocked by platform cap; reaches policy check
+    const r = await payForMedication("p1", "Pharma", "Drug", 50);
+    // Either succeeds or is blocked by policy/approval — but NOT by platform cap
+    expect((r as any).error ?? "").not.toContain("BLOCKED BY PLATFORM CAP");
   });
 });

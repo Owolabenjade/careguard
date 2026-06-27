@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "description": "AI agent for elderly care financial coordination on Stellar",
   "main": "index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "preinstall": "node -e \"const v=parseInt(process.versions.node);if(v<22){process.stderr.write('Node.js 22 or later is required (found '+process.version+').\\n');process.exit(1);}\"",
     "setup": "node --import tsx scripts/setup-wallets.ts",
     "pharmacy-api": "node --import tsx services/pharmacy-api/server.ts",
     "bill-audit-api": "node --import tsx services/bill-audit-api/server.ts",

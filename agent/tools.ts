@@ -749,6 +749,20 @@ function getBudgetMutex(recipientId: string): AsyncMutex {
 }
 
 const MAX_PAYMENT = 1000;
+// Platform-level single-transaction cap (issue #83). Sits above the caregiver policy's
+// approvalThreshold so a compromised session cannot bypass it. Only changeable by redeploying.
+// Read on every call so tests can override process.env.MAX_SINGLE_TX_USDC between runs.
+function getPlatformTxCap(): number {
+  return parseFloat(process.env.MAX_SINGLE_TX_USDC ?? '100');
+}
+
+// Budget values are rounded to 4 decimal places to eliminate float underflow (issue #287).
+// 4 dp = sub-cent precision; values within 0.5/BUDGET_SCALE of zero collapse cleanly to zero.
+const BUDGET_SCALE = 10_000;
+function roundBudget(v: number): number {
+  return Math.round(v * BUDGET_SCALE) / BUDGET_SCALE;
+}
+
 const MAX_ERROR_LENGTH = 500;
 
 function truncateError(message: string): string {
@@ -1006,8 +1020,9 @@ export async function comparePharmacyPrices(
 }
 
 // --- Tool: Fetch Rosa's hospital bill (free endpoint, no x402 payment) ---
-export async function fetchRosaBill() {
-  logger.info("[fetch] getting Rosa's hospital bill");
+export async function fetchRosaBill(recipientId?: string) {
+  const rid = recipientId ?? currentRecipientId;
+  logger.info({ recipientId: rid }, '[fetch] getting care recipient bill');
 
   if (isMockNetwork()) {
     return {
@@ -1025,7 +1040,9 @@ export async function fetchRosaBill() {
     };
   }
 
-  const response = await fetch(`${BILL_AUDIT_API}/bill/sample`);
+  const url = new URL(`${BILL_AUDIT_API}/bill/sample`);
+  if (rid) url.searchParams.set('recipientId', rid);
+  const response = await fetch(url.toString());
 
   if (!response.ok) {
     throw new Error(
@@ -1036,12 +1053,13 @@ export async function fetchRosaBill() {
   return await response.json();
 }
 
-// --- Tool: Fetch Rosa's bill AND audit it in one step (pays via x402) ---
-export async function fetchAndAuditBill() {
-  logger.info("[fetch+audit] getting Rosa's bill and auditing it");
+// --- Tool: Fetch care recipient's bill AND audit it in one step (pays via x402) ---
+export async function fetchAndAuditBill(recipientId?: string) {
+  const rid = recipientId ?? currentRecipientId;
+  logger.info({ recipientId: rid }, "[fetch+audit] getting care recipient bill and auditing it");
 
   // Step 1: Fetch the bill (free)
-  const bill = await fetchRosaBill();
+  const bill = await fetchRosaBill(rid);
 
   // Step 2: Audit it (pays via x402)
   return await auditBill(bill.lineItems);
@@ -1306,12 +1324,12 @@ export function checkSpendingPolicy(
     category === TRANSACTION_CATEGORY.MEDICATIONS
       ? spendingTracker.medications
       : spendingTracker.bills;
-  const remaining = budget - currentSpending;
+  const remaining = roundBudget(budget - currentSpending);
   const totalMonthlySpending =
     spendingTracker.medications +
     spendingTracker.bills +
     spendingTracker.serviceFees;
-  const globalRemaining = policy.monthlyLimit - totalMonthlySpending;
+  const globalRemaining = roundBudget(policy.monthlyLimit - totalMonthlySpending);
 
   if (amount > globalRemaining) {
     return {
@@ -1369,7 +1387,7 @@ export function checkSpendingPolicy(
     allowed: true,
     requiresApproval: amount >= policy.approvalThreshold,
     currentSpending,
-    budgetRemaining: remaining - amount,
+    budgetRemaining: roundBudget(remaining - amount),
   };
 }
 
@@ -1650,6 +1668,12 @@ export async function payForMedication(
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
     };
   }
+  if (amount > getPlatformTxCap()) {
+    return {
+      success: false,
+      error: `BLOCKED BY PLATFORM CAP: $${amount.toFixed(2)} exceeds MAX_SINGLE_TX_USDC ($${getPlatformTxCap().toFixed(2)})`,
+    };
+  }
   // Atomically check policy and reserve the budget before the async payment
   // check when only one slot remains in the budget.
   const release = await getBudgetMutex(currentRecipientId).acquire();
@@ -1791,6 +1815,12 @@ export async function payBill(
     return {
       success: false,
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
+    };
+  }
+  if (amount > getPlatformTxCap()) {
+    return {
+      success: false,
+      error: `BLOCKED BY PLATFORM CAP: $${amount.toFixed(2)} exceeds MAX_SINGLE_TX_USDC ($${getPlatformTxCap().toFixed(2)})`,
     };
   }
   // Atomically check policy and reserve the budget before the async payment

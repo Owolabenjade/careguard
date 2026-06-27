@@ -109,7 +109,9 @@ const agentKeypair = Keypair.fromSecret(process.env.AGENT_SECRET_KEY);
 validateSignerKeyForNetwork(process.env.AGENT_SECRET_KEY, STELLAR_CONFIG);
 const horizonServer = new Horizon.Server(STELLAR_CONFIG.horizonUrl);
 
-const SYSTEM_PROMPT = `You are CareGuard, an AI agent that manages healthcare spending for elderly care recipients on the Stellar blockchain. You work on behalf of a family caregiver to ensure their loved ones get the best prices on medications and catches errors in medical bills.
+function buildSystemPrompt(recipientProfile: RecipientProfile, caregiverName: string): string {
+  const meds = (recipientProfile.medications ?? []).join(', ');
+  return `You are CareGuard, an AI agent that manages healthcare spending for elderly care recipients on the Stellar blockchain. You work on behalf of a family caregiver to ensure their loved ones get the best prices on medications and catches errors in medical bills.
 
 Your responsibilities:
 1. MEDICATION MANAGEMENT: Compare prices across pharmacies and order from the cheapest. Always check drug interactions before ordering.
@@ -125,7 +127,7 @@ IMPORTANT RULES:
 - If a payment is blocked by policy, explain why clearly
 - When comparing medication prices, compare ALL medications at once, then check interactions, then order from cheapest
 - Drug interaction checks require at least 2 medications; if the tool returns NEED_AT_LEAST_TWO_MEDS, ask for more meds instead of concluding "no interactions"
-- When auditing a bill, use fetch_and_audit_bill which fetches Rosa's bill and audits it in one step. Never invent bill data.
+- When auditing a bill, use fetch_and_audit_bill which fetches the care recipient's bill and audits it in one step. Never invent bill data.
   ALLOWED:   Use the line items exactly as returned by the tool. Report the exact amounts, descriptions, and CPT codes.
   DISALLOWED: Do not add, extrapolate, or fabricate any line item, amount, or CPT code that was not in the tool output.
   Example: If the tool returns "Chest X-ray: $180", do not change it to "Chest X-ray: $200" or add "MRI: $1000".
@@ -140,18 +142,14 @@ PAYMENT PROTOCOLS:
 - Bill payments are direct Stellar USDC transfers
 - All transactions settle on Stellar testnet with real USDC
 
-Current care recipients: Rosa Garcia (age 78), and potentially others.
-Caregiver: Maria Garcia (daughter)
+Current care recipient: ${recipientProfile.name} (age ${recipientProfile.age ?? 'unknown'})
+Medications: ${meds || 'none listed'}
+Caregiver: ${caregiverName}
 Use recipient_id parameter when making tool calls that support it.`;
+}
 
 // PHI scrubbing — active unless LLM_PII_SCRUB=false (e.g. provider has a BAA)
 const _piiScrub = process.env.LLM_PII_SCRUB !== "false";
-const _scrubSession = _piiScrub
-  ? buildScrubSession(["Rosa Garcia"], ["Maria Garcia"])
-  : null;
-const SCRUBBED_SYSTEM_PROMPT = _scrubSession
-  ? scrubText(SYSTEM_PROMPT, _scrubSession)
-  : SYSTEM_PROMPT;
 
 // Convert tool definitions to OpenAI-compatible function format
 const LLM_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = TOOL_DEFINITIONS.map((t) => ({
@@ -286,12 +284,18 @@ function calculateMaxTokens(iteration: number, toolCallCount: number, previousTo
 
 // Run the agent with a task — full agentic loop
 async function runAgent(task: string) {
-  const userTask = _scrubSession ? scrubText(task, _scrubSession) : task;
+  const activeRecipient = recipientProfiles.rosa ?? Object.values(recipientProfiles)[0];
+  const systemPrompt = buildSystemPrompt(activeRecipient, caregiverProfile.name);
+  const scrubSession = _piiScrub
+    ? buildScrubSession([activeRecipient.name], [caregiverProfile.name])
+    : null;
+  const userTask = scrubSession ? scrubText(task, scrubSession) : task;
+  const scrubbedSystemPrompt = scrubSession ? scrubText(systemPrompt, scrubSession) : systemPrompt;
   const runId = `run-${getRequestId() ?? Date.now()}`;
   setAgentRunId(runId);
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: SCRUBBED_SYSTEM_PROMPT },
+    { role: "system", content: scrubbedSystemPrompt },
     { role: "user", content: userTask },
   ];
   const toolCalls: Array<{ tool: string; input: Record<string, unknown>; result: ToolResult }> = [];

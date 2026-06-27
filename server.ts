@@ -77,6 +77,8 @@ import {
 } from "./agent/tools.ts";
 import { resolveRequestedDosage } from "./services/pharmacy-api/dosage.ts";
 import { createPharmacyPricingStore } from "./services/pharmacy-api/db.ts";
+import { createCareRecipientsStore } from "./services/care-recipients/db.ts";
+import type { CareRecipient } from "./services/care-recipients/db.ts";
 import {
   buildCompareResponse,
   DrugRecordSchema,
@@ -264,8 +266,8 @@ app.get("/", (_req, res) => {
     network: NETWORK,
     llm: `${LLM_BASE_URL} / ${LLM_MODEL}`,
     agentWallet: agentKeypair.publicKey(),
-    careRecipient: "Rosa Garcia",
-    caregiver: "Maria Garcia",
+    careRecipient: _profileData.recipient.name,
+    caregiver: _profileData.caregiver.name,
     paused: state.paused,
     pausedReason: state.pausedReason,
     pausedAt: state.pausedAt,
@@ -340,6 +342,7 @@ app.patch("/agent/profile", (req, res) => {
 
 const PHARMACY_ADMIN_TOKEN = process.env.PHARMACY_ADMIN_TOKEN || CAREGIVER_TOKEN;
 const pharmacyStore = createPharmacyPricingStore();
+const recipientsStore = createCareRecipientsStore();
 
 function requirePharmacyAdmin(
   req: express.Request,
@@ -657,9 +660,12 @@ function runBillAudit(lineItems: any[]) {
   };
 }
 
-app.get("/bill/sample", (_req, res) => {
+app.get("/bill/sample", (req, res) => {
+  const rid = typeof req.query.recipientId === 'string' ? req.query.recipientId : 'rosa_garcia';
+  const recipient = recipientsStore.getById(rid);
+  const patientName = recipient?.name ?? 'Rosa Garcia';
   res.json({
-    patientName: "Rosa Garcia",
+    patientName,
     facilityName: "General Hospital",
     dateOfService: "2026-03-15",
     lineItems: [
@@ -903,10 +909,38 @@ app.post("/pharmacy/order", async (req, res) => {
 });
 
 // ============================================================
+// CARE RECIPIENTS API
+// ============================================================
+
+app.get("/recipients", requireCaregiverToken, (_req, res) => {
+  res.json(recipientsStore.list());
+});
+
+app.post("/recipients", requireCaregiverToken, (req, res) => {
+  const body = req.body as Partial<CareRecipient>;
+  if (!body?.name || typeof body.name !== 'string' || !body.name.trim()) {
+    res.status(400).json({ error: 'name is required' });
+    return;
+  }
+  const created = recipientsStore.create({
+    name: body.name.trim(),
+    age: typeof body.age === 'number' ? body.age : null,
+    medications: Array.isArray(body.medications) ? body.medications : [],
+    primary_doctor: typeof body.primary_doctor === 'string' ? body.primary_doctor : null,
+    insurance: typeof body.insurance === 'string' ? body.insurance : null,
+    caregiver_user_id: null,
+  });
+  res.status(201).json(created);
+});
+
+// ============================================================
 // AI AGENT
 // ============================================================
 
-const SYSTEM_PROMPT = `You are CareGuard, an AI agent that manages healthcare spending for elderly care recipients on Stellar.
+function buildSystemPrompt(profile: typeof _profileData): string {
+  const r = profile.recipient;
+  const meds = (r.medications ?? []).join(', ');
+  return `You are CareGuard, an AI agent that manages healthcare spending for elderly care recipients on Stellar.
 
 Your responsibilities:
 1. Compare medication prices across pharmacies and order from cheapest. Check drug interactions first.
@@ -915,21 +949,17 @@ Your responsibilities:
 
 IMPORTANT RULES:
 - Check spending policy BEFORE any payment
-- When auditing a bill, use fetch_and_audit_bill which fetches Rosa's bill and audits it in one step. Never invent bill data.
+- When auditing a bill, use fetch_and_audit_bill which fetches the care recipient's bill and audits it in one step. Never invent bill data.
 - When comparing medications, compare ALL at once, check interactions, then order from cheapest
 - Report savings found and API costs
 
-Current care recipient: Rosa Garcia (age 78)
-Caregiver: Maria Garcia (daughter)`;
+Current care recipient: ${r.name} (age ${r.age ?? 'unknown'})
+Medications: ${meds || 'none listed'}
+Caregiver: ${profile.caregiver.name}`;
+}
 
 // PHI scrubbing — active unless LLM_PII_SCRUB=false (e.g. provider has a BAA)
 const _piiScrub = process.env.LLM_PII_SCRUB !== "false";
-const _scrubSession = _piiScrub
-  ? buildScrubSession(["Rosa Garcia"], ["Maria Garcia"])
-  : null;
-const SCRUBBED_SYSTEM_PROMPT = _scrubSession
-  ? scrubText(SYSTEM_PROMPT, _scrubSession)
-  : SYSTEM_PROMPT;
 
 const LLM_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] =
   TOOL_DEFINITIONS.map((t) => ({
@@ -1000,12 +1030,17 @@ async function executeTool(name: string, input: any): Promise<any> {
 }
 
 async function runAgent(task: string) {
-  const userTask = _scrubSession ? scrubText(task, _scrubSession) : task;
+  const systemPrompt = buildSystemPrompt(_profileData);
+  const scrubSession = _piiScrub
+    ? buildScrubSession([_profileData.recipient.name], [_profileData.caregiver.name])
+    : null;
+  const userTask = scrubSession ? scrubText(task, scrubSession) : task;
+  const scrubbedSystemPrompt = scrubSession ? scrubText(systemPrompt, scrubSession) : systemPrompt;
   const runId = `run-${getRequestId() ?? Date.now()}`;
   setAgentRunId(runId);
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: SCRUBBED_SYSTEM_PROMPT },
+    { role: "system", content: scrubbedSystemPrompt },
     { role: "user", content: userTask },
   ];
   const toolCalls: Array<{ tool: string; input: any; result: any }> = [];
